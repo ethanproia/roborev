@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -192,7 +193,7 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 		Title:  cursorCloudTitle(repoURL, sha),
 	})
 	if err != nil {
-		return "", err
+		return "", cursorCloudLaunchErr(err)
 	}
 	if output != nil {
 		fmt.Fprintf(output, "cursor-cloud: created agent %s at %s\n", created.ID, sha)
@@ -251,6 +252,43 @@ func (a *CursorCloudAgent) repoURL(repoPath string) (string, error) {
 	// A credentialed remote (https://user:token@host/...) must not be sent to
 	// Cursor or stored on the launch. Strip before the URL is used anywhere.
 	return config.StripURLCredentials(raw), nil
+}
+
+// cursorCloudLaunchError is a CreateAgent failure that may already have
+// created a remote VM. Its text omits the provider status so a 429 or 5xx
+// stays LimitKindNone. The worker's unavailable check then fails the job
+// instead of calling RetryJob, which would POST /v0/agents again.
+type cursorCloudLaunchError struct{ cause error }
+
+func (e *cursorCloudLaunchError) Error() string { return "cursor-cloud: launch failed" }
+
+func (e *cursorCloudLaunchError) Unwrap() error { return e.cause }
+
+// cursorCloudLaunchErr marks a launch non-retryable unless err is a dial or
+// connect that happened before any request bytes were written. A 429, a 5xx,
+// a timeout after send, and any ambiguous error are non-retryable: the server
+// may already have created an agent, and a retry would leak another VM.
+func cursorCloudLaunchErr(err error) error {
+	if err == nil || cursorCloudPreSend(err) {
+		return err
+	}
+	return MarkUnavailable(&cursorCloudLaunchError{cause: err})
+}
+
+// cursorCloudPreSend reports a failure that cannot have transmitted the
+// launch. Only a dial or connect qualifies. A timeout or a dropped response
+// is not proof that the POST never left.
+func cursorCloudPreSend(err error) bool {
+	var op *net.OpError
+	if !errors.As(err, &op) || op == nil {
+		return false
+	}
+	switch op.Op {
+	case "dial", "connect":
+		return true
+	default:
+		return false
+	}
 }
 
 func deleteCursorCloudAgent(client cursorcloud.Client, id string, output io.Writer) error {

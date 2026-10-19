@@ -2,11 +2,18 @@ package cursorcloud
 
 import (
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestV1APINotePresent(t *testing.T) {
+	src, err := os.ReadFile("http.go")
+	require.NoError(t, err)
+	require.Contains(t, string(src), "TODO: migrate to the Cursor cloud agents v1 API when v1 replaces the v0")
+}
 
 func TestFmtNeverPrintsAPIKey(t *testing.T) {
 	const sentinelKey = "sentinel-cursor-api-key"
