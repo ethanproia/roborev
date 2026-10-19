@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/exec"
@@ -159,12 +160,14 @@ func TestCursorAPIKeyNeverLogged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, fake.message, got)
 	assert.NotContains(t, fake.created.Prompt, cursorCloudTestSecret)
+	assert.Empty(t, fake.created.Title)
+	assert.Equal(t, 0, fake.archiveCount())
 	assert.NotContains(t, out.String(), cursorCloudTestSecret)
 	assert.NotContains(t, logs.String(), cursorCloudTestSecret)
 	assert.NotContains(t, errText(err), cursorCloudTestSecret)
 }
 
-func TestCursorCloudArchiveOnSuccessErrorAndTimeout(t *testing.T) {
+func TestCursorCloudReviewDoesNotArchive(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	repo := "https://example.com/acme/repo.git"
 	prompt := "look at the nil map"
@@ -175,7 +178,8 @@ func TestCursorCloudArchiveOnSuccessErrorAndTimeout(t *testing.T) {
 		got, err := a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "review text", got)
-		assert.Equal(t, 1, fake.archiveCount())
+		assert.Equal(t, 0, fake.archiveCount())
+		assert.Empty(t, fake.created.Title)
 		assert.Equal(t, sha, fake.created.Ref)
 		assert.Equal(t, repo, fake.created.Repo)
 		assert.Contains(t, fake.created.Prompt, prompt)
@@ -192,7 +196,7 @@ func TestCursorCloudArchiveOnSuccessErrorAndTimeout(t *testing.T) {
 		_, err := a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "ERROR")
-		assert.Equal(t, 1, fake.archiveCount())
+		assert.Equal(t, 0, fake.archiveCount())
 	})
 
 	t.Run("timeout", func(t *testing.T) {
@@ -206,7 +210,7 @@ func TestCursorCloudArchiveOnSuccessErrorAndTimeout(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "timed out")
 			assert.Greater(t, fake.getCount(), 1)
-			assert.Equal(t, 1, fake.archiveCount())
+			assert.Equal(t, 0, fake.archiveCount())
 		})
 	})
 
@@ -225,9 +229,44 @@ func TestCursorCloudArchiveOnSuccessErrorAndTimeout(t *testing.T) {
 			_, err := a.Review(ctx, t.TempDir(), sha, prompt, nil)
 			require.Error(t, err)
 			require.ErrorIs(t, err, context.Canceled)
-			assert.Equal(t, 1, fake.archiveCount())
+			assert.Equal(t, 0, fake.archiveCount())
 		})
 	})
+}
+
+func TestCursorCloudCreatingAndUnknownStayInProgress(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	repo := "https://example.com/acme/repo.git"
+	for _, statuses := range [][]cursorcloud.AgentStatus{
+		{"CREATING", cursorcloud.StatusFinished},
+		{"QUEUED", cursorcloud.StatusFinished},
+	} {
+		t.Run(string(statuses[0]), func(t *testing.T) {
+			fake := &fakeCloud{statuses: statuses, message: "review text"}
+			a := &CursorCloudAgent{
+				Client: fake, RepoURL: repo, PollInterval: time.Millisecond,
+			}
+			got, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+			require.NoError(t, err)
+			assert.Equal(t, "review text", got)
+			assert.GreaterOrEqual(t, fake.getCount(), 2)
+			assert.Equal(t, 0, fake.archiveCount())
+		})
+	}
+}
+
+func TestCursorCloudNoAssistantMessageFailsReview(t *testing.T) {
+	fake := &fakeCloud{
+		status:   cursorcloud.StatusFinished,
+		finalErr: errors.New("cursor cloud final message: no assistant message"),
+	}
+	a := &CursorCloudAgent{Client: fake, RepoURL: "https://example.com/acme/repo.git"}
+	_, err := a.Review(context.Background(), t.TempDir(), "0123456789abcdef0123456789abcdef01234567", "prompt", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no assistant message")
+	assert.Contains(t, err.Error(), "finished with no assistant message")
+	assert.True(t, IsUnavailable(err))
+	assert.Equal(t, 0, fake.archiveCount())
 }
 
 func TestCursorCloudResolvesHeadSHA(t *testing.T) {
@@ -254,14 +293,17 @@ func TestCursorCloudResolvesHeadSHA(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sha, fake.created.Ref)
 	assert.Equal(t, "https://example.com/acme/repo.git", fake.created.Repo)
-	assert.Equal(t, 1, fake.archiveCount())
+	assert.Empty(t, fake.created.Title)
+	assert.Equal(t, 0, fake.archiveCount())
 }
 
 type fakeCloud struct {
 	mu         sync.Mutex
 	created    cursorcloud.CreateAgentRequest
+	statuses   []cursorcloud.AgentStatus
 	status     cursorcloud.AgentStatus
 	message    string
+	finalErr   error
 	gets       int
 	archives   int
 	createErr  error
@@ -282,12 +324,22 @@ func (f *fakeCloud) GetAgent(_ context.Context, id string) (cursorcloud.Agent, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gets++
-	return cursorcloud.Agent{ID: id, Status: f.status}, nil
+	status := f.status
+	if len(f.statuses) > 0 {
+		status = f.statuses[0]
+		if len(f.statuses) > 1 {
+			f.statuses = f.statuses[1:]
+		}
+	}
+	return cursorcloud.Agent{ID: id, Status: status}, nil
 }
 
 func (f *fakeCloud) FinalMessage(context.Context, string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.finalErr != nil {
+		return "", f.finalErr
+	}
 	return f.message, nil
 }
 
