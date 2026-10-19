@@ -1416,19 +1416,7 @@ func (wp *WorkerPool) processJob(workerID string, job *storage.ReviewJob) {
 			wp.releaseIfPanelMember(job)
 			return // Job already marked as canceled in DB, nothing more to do
 		}
-		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
-			timeoutErr := fmt.Sprintf(
-				"%s %s",
-				agentTimeoutErrorPrefix,
-				jobTimeoutDuration.Round(time.Second),
-			)
-			log.Printf("[%s] Job %d timed out: %v", workerID, job.ID, err)
-			wp.failOrRetryAgentContext(ctx, workerID, job, agentName, timeoutErr)
-			return
-		}
-		log.Printf("[%s] Agent error on job %d: %v",
-			workerID, job.ID, err)
-		wp.failOrRetryAgentExecutionContext(ctx, workerID, job, agentName, err)
+		wp.finishAgentError(ctx, workerID, job, agentName, err, jobTimeoutDuration)
 		return
 	}
 	if wp.handleUpdateInterruption(ctx, workerID, job) {
@@ -1651,13 +1639,36 @@ func (wp *WorkerPool) failOrRetryAgentContext(
 // failing over would only hide the missing marker.
 func (wp *WorkerPool) failGetAgentContext(ctx context.Context, workerID string, job *storage.ReviewJob, err error) {
 	errorMsg := fmt.Sprintf("get agent: %v", err)
-	if !agent.IsHostUnavailable(err) {
+	if !agent.IsHostUnavailable(err) && !agent.IsCursorCloudConfig(err) {
 		wp.failOrRetryAgentContext(ctx, workerID, job, job.Agent, errorMsg)
 		return
 	}
 	wp.runAttemptTransition(workerID, job, func() {
 		wp.failWithoutRetryLocked(workerID, job, job.Agent, errorMsg)
 	})
+}
+
+// finishAgentError routes a finished agent error. A typed cursor-cloud launch
+// failure is terminal even when it unwraps to context.DeadlineExceeded, which
+// this path otherwise retries.
+func (wp *WorkerPool) finishAgentError(ctx context.Context, workerID string, job *storage.ReviewJob, agentName string, err error, jobTimeout time.Duration) {
+	if errors.Is(err, agent.ErrCursorCloudNonRetryable) {
+		log.Printf("[%s] Agent error on job %d: %v", workerID, job.ID, err)
+		wp.failOrRetryAgentExecutionContext(ctx, workerID, job, agentName, err)
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+		timeoutErr := fmt.Sprintf(
+			"%s %s",
+			agentTimeoutErrorPrefix,
+			jobTimeout.Round(time.Second),
+		)
+		log.Printf("[%s] Job %d timed out: %v", workerID, job.ID, err)
+		wp.failOrRetryAgentContext(ctx, workerID, job, agentName, timeoutErr)
+		return
+	}
+	log.Printf("[%s] Agent error on job %d: %v", workerID, job.ID, err)
+	wp.failOrRetryAgentExecutionContext(ctx, workerID, job, agentName, err)
 }
 
 // failOrRetryAgentExecutionContext preserves the typed category attached by an
@@ -1679,6 +1690,14 @@ func (wp *WorkerPool) failOrRetryAgentExecutionContext(
 	if noVerdict, ok := errors.AsType[*review.NoVerdictError](executionErr); ok {
 		wp.failoverOrFailNonRetryableAgentContext(
 			ctx, workerID, job, agentName, review.NoVerdictMessage(noVerdict),
+		)
+		return
+	}
+	// Typed cursor-cloud launch and cap failures never reach RetryJob, even
+	// when the cause text would classify as a transient 429.
+	if errors.Is(executionErr, agent.ErrCursorCloudNonRetryable) {
+		wp.failoverOrFailNonRetryableAgentContext(
+			ctx, workerID, job, agentName, fmt.Sprintf("agent: %v", executionErr),
 		)
 		return
 	}
@@ -1896,6 +1915,11 @@ func failoverWorkflow(job *storage.ReviewJob) string {
 // Personal CI jobs use only a stored, locally resolved backup. Ordinary jobs
 // retain the workflow-config fallback.
 func (wp *WorkerPool) resolveBackupAgent(job *storage.ReviewJob) string {
+	if job != nil && agent.CanonicalName(job.Agent) == agent.CursorCloudHost {
+		// An explicit cursor-cloud review fails closed. It does not fail over
+		// onto a local agent.
+		return ""
+	}
 	// An explicit per-job backup wins, for reliability: the enqueuer (e.g. a CI
 	// panel synthesis) chose this failover deliberately. Canonicalize the alias
 	// (e.g. "claude" -> "claude-code") via the registry; fall back to the raw

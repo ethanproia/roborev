@@ -1164,6 +1164,28 @@ func (p *CIPoller) resolveCIMatrixMembers(
 	if len(matrix) == 0 {
 		return nil, config.SynthesisSpec{}, nil
 	}
+	repoHost, globalHost := "", ""
+	if repoCfg != nil {
+		repoHost = repoCfg.Host
+	}
+	if cfg != nil {
+		globalHost = cfg.Host
+	}
+	if host, err := agent.ReviewHost("", repoHost, globalHost); err != nil {
+		return nil, config.SynthesisSpec{}, err
+	} else if host == agent.CursorCloudHost {
+		// The agents x review_types matrix would launch one cloud VM per cell.
+		synth, err := config.ResolveCISynthesis(reasoning, repoCfg, cfg)
+		if err != nil {
+			return nil, config.SynthesisSpec{}, fmt.Errorf("resolve CI synthesis: %w", err)
+		}
+		return []config.ResolvedMember{{
+			Name:      host,
+			Index:     0,
+			Agent:     host,
+			Reasoning: reasoning,
+		}}, synth, nil
+	}
 
 	members := make([]config.ResolvedMember, 0, len(matrix))
 	for i, entry := range matrix {
@@ -1335,6 +1357,18 @@ func (p *CIPoller) resolveMatrixMemberAgent(
 	reasoning string,
 ) (string, string, string, string, error) {
 	workflow := config.WorkflowForReviewType(entry.ReviewType)
+	repoHost, globalHost := "", ""
+	if repoCfg != nil {
+		repoHost = repoCfg.Host
+	}
+	if cfg != nil {
+		globalHost = cfg.Host
+	}
+	if host, err := agent.ReviewHost("", repoHost, globalHost); err != nil {
+		return "", "", "", "", err
+	} else if host == agent.CursorCloudHost {
+		return host, "", "", "", nil
+	}
 	resolution, err := agent.ResolveWorkflowConfigFromConfig(entry.Agent, repoCfg, cfg, workflow, reasoning)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("resolve workflow config: %w", err)

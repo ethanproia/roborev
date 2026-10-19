@@ -3198,6 +3198,30 @@ func TestResolveCIMatrixMembersUsesPassedRepoConfigForAgentModel(t *testing.T) {
 	assert.Equal(t, "default-branch-model", members[0].Model)
 }
 
+func TestCIMatrixCursorCloudLaunchesOneAgent(t *testing.T) {
+	h := newCIPollerHarness(t, "git@github.com:acme/api.git")
+	t.Setenv("CURSOR_API_KEY", "cursor-test-secret")
+	h.Cfg.Host = "cursor-cloud"
+	repoCfg := &config.RepoConfig{
+		Host: "cursor-cloud",
+		CI: config.RepoCIConfig{
+			Agents:      []string{"codex", "gemini"},
+			ReviewTypes: []string{"security", "default"},
+		},
+	}
+	members, _, err := h.Poller.resolveCIMatrixMembers(
+		h.Repo, repoCfg, map[string]any{
+			"ci": map[string]any{
+				"agents":       []any{"codex", "gemini"},
+				"review_types": []any{"security", "default"},
+			},
+		}, h.Cfg, "acme/api",
+	)
+	require.NoError(t, err)
+	require.Len(t, members, 1)
+	assert.Equal(t, "cursor-cloud", members[0].Agent)
+}
+
 func TestResolveCIMatrixMembersUsesCustomTypeReasoning(t *testing.T) {
 	h := newCIPollerHarness(t, "git@github.com:acme/api.git")
 	h.Cfg.DefaultAgent = "global-agent"
