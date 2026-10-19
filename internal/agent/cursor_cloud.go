@@ -291,8 +291,7 @@ func cloudFinalMessage(ctx context.Context, client cursorcloud.Client, id string
 }
 
 func noAssistantMessage(err error) bool {
-	return errors.Is(err, cursorcloud.ErrNoAssistantMessage) ||
-		(err != nil && strings.Contains(err.Error(), "no assistant message"))
+	return err != nil && strings.Contains(err.Error(), "no assistant message")
 }
 
 func cloudPrompt(prompt string, schema jsontext.Value) string {
