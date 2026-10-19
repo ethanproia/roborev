@@ -1194,8 +1194,22 @@ explicit `host` without `ROBOREV_HOST_AGENT=1` is the same kind of error.
 The cloud review is created at the exact commit SHA and polled until it
 finishes. `CREATING` and any other unknown status stay in progress. The
 agent's final assistant message is the review. A finished agent with no
-assistant message fails that review. Agents are never deleted by roborev.
-Goal reviews and fix jobs stay on the local agent.
+assistant message fails that review. roborev deletes that agent when the
+review ends, on success, error, timeout, and cancellation. A delete failure
+is logged and reported, and the review result stays the one the agent
+returned. Userinfo is removed from the repository URL before it is sent or
+stored. Goal reviews and fix jobs stay on the local agent.
+
+Launch limits are checked before the agent is created. The defaults are 4
+concurrent launches and 60 launches in a rolling hour. 4 matches the default
+worker count. 60 is one launch a minute. A launch past either limit returns
+an error and creates no agent. A finished review frees its concurrent slot
+after the agent is deleted. A launch stops counting one hour after it
+started.
+
+Set `ROBOREV_CURSOR_CLOUD_MAX_CONCURRENT` and
+`ROBOREV_CURSOR_CLOUD_MAX_PER_HOUR` to a positive integer to change a limit.
+An unset, zero, or invalid value keeps the default.
 
 The request tells the agent to avoid shell tools, ignore the repository's
 `.cursor` configuration, skip `environment.json` setup, not write to the

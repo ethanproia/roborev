@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"os"
@@ -160,7 +161,7 @@ func TestCursorAPIKeyNeverLogged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, fake.message, got)
 	assert.NotContains(t, fake.created.Prompt, cursorCloudTestSecret)
-	assert.Empty(t, fake.created.Title)
+	assert.Equal(t, "roborev review repo 0123456", fake.created.Title)
 	assert.Equal(t, 0, fake.archiveCount())
 	assert.NotContains(t, out.String(), cursorCloudTestSecret)
 	assert.NotContains(t, logs.String(), cursorCloudTestSecret)
@@ -179,7 +180,7 @@ func TestCursorCloudReviewDoesNotArchive(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "review text", got)
 		assert.Equal(t, 0, fake.archiveCount())
-		assert.Empty(t, fake.created.Title)
+		assert.Equal(t, "roborev review repo 0123456", fake.created.Title)
 		assert.Equal(t, sha, fake.created.Ref)
 		assert.Equal(t, repo, fake.created.Repo)
 		assert.Contains(t, fake.created.Prompt, prompt)
@@ -255,48 +256,56 @@ func TestCursorCloudCreatingAndUnknownStayInProgress(t *testing.T) {
 	}
 }
 
-func TestCursorCloudReviewKeepsAgentRecord(t *testing.T) {
+func TestCursorCloudReviewDeletesAgent(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	repo := "https://example.com/acme/repo.git"
 	prompt := "look at the nil map"
 
-	assertNoDelete := func(t *testing.T, fake *cursorcloudtest.Fake, wantAgents int) {
+	assertOneDeletePerLaunch := func(t *testing.T, fake *cursorcloudtest.Fake, launches int) {
 		t.Helper()
+		creates := 0
+		deletes := map[string]int{}
 		for _, call := range fake.Calls() {
-			assert.NotContains(t, call.Method, "Archive")
-			assert.NotContains(t, call.Method, "Delete")
+			switch call.Method {
+			case cursorcloudtest.MethodCreate:
+				creates++
+			case cursorcloudtest.MethodDelete:
+				deletes[call.ID]++
+			}
+		}
+		assert.Equal(t, launches, creates)
+		assert.Len(t, deletes, launches)
+		for id, n := range deletes {
+			assert.Equal(t, 1, n, "agent %s", id)
+			assert.NotEmpty(t, id)
 		}
 		listed, err := fake.ListAgents(context.Background())
 		require.NoError(t, err)
-		assert.Len(t, listed, wantAgents)
-		for _, ag := range listed {
-			_, err := fake.GetAgent(context.Background(), ag.ID)
-			require.NoError(t, err)
-		}
+		assert.Empty(t, listed)
 	}
 
-	t.Run("success and rerun", func(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
 		fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "review text"}
 		a := &CursorCloudAgent{Client: fake, RepoURL: repo}
 		got, err := a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "review text", got)
-		assertNoDelete(t, fake, 1)
+		assertOneDeletePerLaunch(t, fake, 1)
 
 		got, err = a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "review text", got)
-		assertNoDelete(t, fake, 2)
+		assertOneDeletePerLaunch(t, fake, 2)
 	})
 
-	t.Run("error", func(t *testing.T) {
+	t.Run("launch-ok-then-error", func(t *testing.T) {
 		fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusError}
 		a := &CursorCloudAgent{Client: fake, RepoURL: repo}
 		text, err := a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
 		require.Error(t, err)
 		assert.Empty(t, text)
 		assert.Contains(t, err.Error(), "ERROR")
-		assertNoDelete(t, fake, 1)
+		assertOneDeletePerLaunch(t, fake, 1)
 	})
 
 	t.Run("timeout", func(t *testing.T) {
@@ -310,7 +319,7 @@ func TestCursorCloudReviewKeepsAgentRecord(t *testing.T) {
 			require.Error(t, err)
 			assert.Empty(t, text)
 			assert.Contains(t, err.Error(), "timed out")
-			assertNoDelete(t, fake, 1)
+			assertOneDeletePerLaunch(t, fake, 1)
 		})
 	})
 
@@ -330,7 +339,7 @@ func TestCursorCloudReviewKeepsAgentRecord(t *testing.T) {
 			require.Error(t, err)
 			assert.Empty(t, text)
 			require.ErrorIs(t, err, context.Canceled)
-			assertNoDelete(t, fake, 1)
+			assertOneDeletePerLaunch(t, fake, 1)
 		})
 	})
 }
@@ -347,14 +356,19 @@ func TestCursorCloudCreatingAndUnknownKeepPolling(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "review text", got)
 			gets := 0
+			deletes := 0
 			for _, call := range fake.Calls() {
-				if call.Method == cursorcloudtest.MethodGet {
+				switch call.Method {
+				case cursorcloudtest.MethodGet:
 					gets++
+				case cursorcloudtest.MethodDelete:
+					deletes++
+				default:
+					assert.NotContains(t, call.Method, "Archive")
 				}
-				assert.NotContains(t, call.Method, "Delete")
-				assert.NotContains(t, call.Method, "Archive")
 			}
 			assert.GreaterOrEqual(t, gets, 2)
+			assert.Equal(t, 1, deletes)
 		})
 	}
 }
@@ -375,7 +389,14 @@ func TestCursorCloudMissingAssistantMessageHasNoFallback(t *testing.T) {
 	assert.True(t, IsUnavailable(err))
 	listed, listErr := fake.ListAgents(context.Background())
 	require.NoError(t, listErr)
-	assert.Len(t, listed, 1)
+	assert.Empty(t, listed)
+	deletes := 0
+	for _, call := range fake.Calls() {
+		if call.Method == cursorcloudtest.MethodDelete {
+			deletes++
+		}
+	}
+	assert.Equal(t, 1, deletes)
 }
 
 func TestCursorCloudNoAssistantMessageFailsReview(t *testing.T) {
@@ -416,8 +437,282 @@ func TestCursorCloudResolvesHeadSHA(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sha, fake.created.Ref)
 	assert.Equal(t, "https://example.com/acme/repo.git", fake.created.Repo)
-	assert.Empty(t, fake.created.Title)
+	assert.Equal(t, cursorCloudTitle("https://example.com/acme/repo.git", sha), fake.created.Title)
 	assert.Equal(t, 0, fake.archiveCount())
+}
+
+func TestCursorCloudReviewTitle(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	repo := "https://github.com/o/r.git"
+	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
+	a := &CursorCloudAgent{Client: fake, RepoURL: repo}
+	_, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+	require.NoError(t, err)
+	var title string
+	for _, call := range fake.Calls() {
+		if call.Method == cursorcloudtest.MethodCreate {
+			title = call.Request.Title
+		}
+	}
+	assert.Equal(t, "roborev review r 0123456", title)
+}
+
+func TestCursorCloudRemoteURLStripsUserinfo(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s: %s", strings.Join(args, " "), out)
+	}
+	gitCmd("init", "-b", "main")
+	gitCmd("config", "user.email", "dev@example.com")
+	gitCmd("config", "user.name", "Dev")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x\n"), 0o644))
+	gitCmd("add", "f.txt")
+	gitCmd("commit", "-m", "init")
+	const credentialed = "https://user:tok@github.com/o/r.git"
+	gitCmd("remote", "add", "origin", credentialed)
+
+	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	out := &bytes.Buffer{}
+	_, err := (&CursorCloudAgent{Client: fake}).Review(context.Background(), dir, "HEAD", "prompt", out)
+	require.NoError(t, err)
+
+	var body []byte
+	var repo string
+	for _, call := range fake.Calls() {
+		if call.Method != cursorcloudtest.MethodCreate {
+			continue
+		}
+		repo = call.Request.Repo
+		raw, marshalErr := json.Marshal(call.Request)
+		require.NoError(t, marshalErr)
+		body = append(body, raw...)
+		assert.NotContains(t, call.Request.Title, "tok")
+		assert.NotContains(t, call.Request.Prompt, "tok")
+	}
+	require.NotEmpty(t, body)
+	assert.Equal(t, "https://github.com/o/r.git", repo)
+	hostAt := strings.Index(repo, "github.com")
+	require.Positive(t, hostAt)
+	assert.NotContains(t, repo[:hostAt], "@")
+	assert.NotContains(t, string(body), "tok")
+	assert.NotContains(t, string(body), "@github.com")
+	assert.NotContains(t, out.String(), "tok")
+	assert.NotContains(t, logs.String(), "tok")
+	listed, listErr := fake.ListAgents(context.Background())
+	require.NoError(t, listErr)
+	for _, ag := range listed {
+		assert.NotContains(t, ag.Title, "tok")
+		assert.NotContains(t, ag.ID, "tok")
+	}
+}
+
+func TestCursorCloudDeleteFailureDoesNotMaskReview(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	repo := "https://example.com/acme/repo.git"
+	delErr := errors.New("delete failed")
+
+	t.Run("success", func(t *testing.T) {
+		fake := &cursorcloudtest.Fake{
+			CreateStatus: cursorcloud.StatusFinished,
+			Final:        "review text",
+			MethodErrors: map[string]error{cursorcloudtest.MethodDelete: delErr},
+		}
+		var logs bytes.Buffer
+		prev := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(prev) })
+		out := &bytes.Buffer{}
+		got, err := (&CursorCloudAgent{Client: fake, RepoURL: repo}).Review(context.Background(), t.TempDir(), sha, "prompt", out)
+		require.NoError(t, err)
+		assert.Equal(t, "review text", got)
+		assert.Contains(t, logs.String(), "delete agent")
+		assert.Contains(t, out.String(), "delete agent")
+		assert.NotContains(t, got, "delete failed")
+	})
+
+	t.Run("error", func(t *testing.T) {
+		fake := &cursorcloudtest.Fake{
+			CreateStatus: cursorcloud.StatusError,
+			MethodErrors: map[string]error{cursorcloudtest.MethodDelete: delErr},
+		}
+		var logs bytes.Buffer
+		prev := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(prev) })
+		_, err := (&CursorCloudAgent{Client: fake, RepoURL: repo}).Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ERROR")
+		assert.Contains(t, err.Error(), "delete agent")
+		assert.Contains(t, logs.String(), "delete agent")
+		assert.True(t, IsUnavailable(err))
+	})
+}
+
+func TestCursorCloudLaunchLimitDefaults(t *testing.T) {
+	unsetForTest(t, envCursorCloudMaxConcurrent)
+	unsetForTest(t, envCursorCloudMaxPerHour)
+	concurrent, perHour := configuredCursorCloudLaunchLimits()
+	assert.Equal(t, defaultCursorCloudMaxConcurrent, concurrent)
+	assert.Equal(t, defaultCursorCloudMaxPerHour, perHour)
+	assert.Equal(t, 4, concurrent)
+	assert.Equal(t, 60, perHour)
+
+	t.Setenv(envCursorCloudMaxConcurrent, "5")
+	t.Setenv(envCursorCloudMaxPerHour, "9")
+	concurrent, perHour = configuredCursorCloudLaunchLimits()
+	assert.Equal(t, 5, concurrent)
+	assert.Equal(t, 9, perHour)
+
+	t.Setenv(envCursorCloudMaxConcurrent, "0")
+	t.Setenv(envCursorCloudMaxPerHour, "nope")
+	concurrent, perHour = configuredCursorCloudLaunchLimits()
+	assert.Equal(t, defaultCursorCloudMaxConcurrent, concurrent)
+	assert.Equal(t, defaultCursorCloudMaxPerHour, perHour)
+}
+
+func TestCursorCloudProductionUsesProcessLaunchGate(t *testing.T) {
+	injected := &CursorCloudAgent{Client: &cursorcloudtest.Fake{}}
+	assert.Nil(t, injected.launchGate())
+	assert.Same(t, cursorCloudLaunches, (&CursorCloudAgent{}).launchGate())
+}
+
+func TestCursorCloudConcurrentCapRefusesBeforeCreate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const n = 2
+		sha := "0123456789abcdef0123456789abcdef01234567"
+		repo := "https://example.com/acme/repo.git"
+		fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusRunning}
+		hold := &holdGetCloud{Fake: fake, holdN: n, entered: make(chan struct{}, n), release: make(chan struct{})}
+		gate := &cursorCloudLaunchGate{maxConcurrent: n, maxPerHour: 100}
+		a := &CursorCloudAgent{
+			Client: hold, RepoURL: repo, launches: gate,
+			Timeout: time.Minute, PollInterval: time.Hour,
+		}
+		errs := make(chan error, n)
+		for range n {
+			go func() {
+				_, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+				errs <- err
+			}()
+		}
+		for range n {
+			<-hold.entered
+		}
+		assert.Equal(t, n, createCount(fake))
+
+		_, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max concurrent")
+		assert.Equal(t, n, createCount(fake))
+
+		listed, listErr := fake.ListAgents(context.Background())
+		require.NoError(t, listErr)
+		require.Len(t, listed, n)
+		for _, ag := range listed {
+			fake.SetStatus(ag.ID, cursorcloud.StatusFinished)
+		}
+		fake.Final = "done"
+		fake.CreateStatus = cursorcloud.StatusFinished
+		hold.release <- struct{}{}
+		require.NoError(t, <-errs)
+		assert.Equal(t, 1, deleteCount(fake))
+
+		_, err = a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+		require.NoError(t, err)
+		assert.Equal(t, n+1, createCount(fake))
+
+		close(hold.release)
+		for range n - 1 {
+			require.NoError(t, <-errs)
+		}
+	})
+}
+
+func TestCursorCloudHourlyCapRefusesBeforeCreate(t *testing.T) {
+	const n = 3
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	repo := "https://example.com/acme/repo.git"
+	clock := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	gate := &cursorCloudLaunchGate{
+		now:           func() time.Time { return clock },
+		maxConcurrent: 10,
+		maxPerHour:    n,
+	}
+	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
+	a := &CursorCloudAgent{Client: fake, RepoURL: repo, launches: gate, PollInterval: time.Millisecond}
+	for range n {
+		_, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+		require.NoError(t, err)
+	}
+	before := createCount(fake)
+	assert.Equal(t, n, before)
+
+	_, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "last hour")
+	assert.Equal(t, before, createCount(fake))
+
+	clock = clock.Add(time.Hour - time.Nanosecond)
+	_, err = a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "last hour")
+	assert.Equal(t, before, createCount(fake))
+
+	clock = clock.Add(time.Nanosecond)
+	_, err = a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+	require.NoError(t, err)
+	assert.Equal(t, before+1, createCount(fake))
+}
+
+func createCount(fake *cursorcloudtest.Fake) int {
+	return methodCount(fake, cursorcloudtest.MethodCreate)
+}
+
+func deleteCount(fake *cursorcloudtest.Fake) int {
+	return methodCount(fake, cursorcloudtest.MethodDelete)
+}
+
+func methodCount(fake *cursorcloudtest.Fake, method string) int {
+	n := 0
+	for _, call := range fake.Calls() {
+		if call.Method == method {
+			n++
+		}
+	}
+	return n
+}
+
+// holdGetCloud blocks the first holdN GetAgent calls so those reviews keep
+// their concurrent launch slots.
+type holdGetCloud struct {
+	*cursorcloudtest.Fake
+	holdN   int
+	held    int
+	mu      sync.Mutex
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *holdGetCloud) GetAgent(ctx context.Context, id string) (cursorcloud.Agent, error) {
+	h.mu.Lock()
+	block := h.held < h.holdN
+	if block {
+		h.held++
+	}
+	h.mu.Unlock()
+	if block {
+		h.entered <- struct{}{}
+		<-h.release
+	}
+	return h.Fake.GetAgent(ctx, id)
 }
 
 type fakeCloud struct {
@@ -464,6 +759,10 @@ func (f *fakeCloud) FinalMessage(context.Context, string) (string, error) {
 		return "", f.finalErr
 	}
 	return f.message, nil
+}
+
+func (f *fakeCloud) DeleteAgent(context.Context, string) error {
+	return nil
 }
 
 func (f *fakeCloud) ArchiveAgent(context.Context, string) error {

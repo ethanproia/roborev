@@ -129,7 +129,11 @@ func TestHTTPCreateValidationDoesNotDial(t *testing.T) {
 	require.ErrorContains(t, err, "agent id is empty")
 	_, err = client.GetAgent(context.Background(), "../secret")
 	require.ErrorContains(t, err, "agent id is invalid")
-	_, err = client.GetAgent(nil, "bc_1") //nolint:staticcheck // SA1012: nil context is the case under test.
+	err = client.DeleteAgent(context.Background(), " ")
+	require.ErrorContains(t, err, "agent id is empty")
+	err = client.DeleteAgent(context.Background(), "../secret")
+	require.ErrorContains(t, err, "agent id is invalid")
+	err = client.DeleteAgent(nil, "bc_1") //nolint:staticcheck // SA1012: nil context is the case under test.
 	require.ErrorContains(t, err, "nil context")
 	assertNoKey(t, err)
 }
@@ -208,6 +212,17 @@ func TestHTTPListRepeatedCursor(t *testing.T) {
 	require.ErrorContains(t, err, "pagination cursor repeated")
 	assert.Equal(t, 2, hits)
 	assertNoKey(t, err)
+}
+
+func TestHTTPDeleteAgent(t *testing.T) {
+	client, rec := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodDelete, r.Method)
+		assert.Equal(t, "/v0/agents/bc_1", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	require.NoError(t, client.DeleteAgent(context.Background(), "bc_1"))
+	assert.Equal(t, []string{http.MethodDelete}, methods(rec))
+	assertAuth(t, rec)
 }
 
 func TestHTTPErrorMappingAndRedaction(t *testing.T) {

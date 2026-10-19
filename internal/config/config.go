@@ -2591,6 +2591,12 @@ func ResolveRepoIdentity(repoPath string, getRemoteURL func(repoPath, remoteName
 	return "local://" + absPath
 }
 
+// StripURLCredentials removes userinfo from a URL before it is sent or stored.
+// See stripURLCredentials for the non-URL cases that stay unchanged.
+func StripURLCredentials(rawURL string) string {
+	return stripURLCredentials(rawURL)
+}
+
 // stripURLCredentials removes userinfo (username:password) from a URL.
 // For non-URL strings (e.g., SSH URLs like git@github.com:user/repo.git),
 // returns the original string unchanged.

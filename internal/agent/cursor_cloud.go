@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"slices"
 	"strings"
 	"time"
 
+	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/git"
 )
@@ -26,6 +28,10 @@ const (
 
 	cursorCloudAgentName = CursorCloudHost
 	cursorCloudMaxPoll   = 5 * time.Second
+	// cursorCloudDeleteTimeout bounds the post-review DELETE. It matches the
+	// cursorcloud client's 60s response-header timeout so a stalled delete is
+	// not abandoned before that client gives up on the socket.
+	cursorCloudDeleteTimeout = 60 * time.Second
 )
 
 // cursorCloudSafety is sent with every cloud review. The API has no fields
@@ -117,8 +123,11 @@ type CursorCloudAgent struct {
 	PollInterval time.Duration
 	// Client overrides cursorcloud.NewFromEnv. Production leaves it nil.
 	Client cursorcloud.Client
-	// RepoURL overrides git remote lookup.
+	// RepoURL overrides git remote lookup. Userinfo is stripped before use.
 	RepoURL string
+	// launches overrides the process-wide launch cap. Tests set it. Production
+	// leaves it nil and uses cursorCloudLaunches.
+	launches *cursorCloudLaunchGate
 }
 
 func (a *CursorCloudAgent) Name() string                       { return cursorCloudAgentName }
@@ -146,7 +155,7 @@ func (a *CursorCloudAgent) ReviewWithSchema(ctx context.Context, repoPath, gitRe
 	return jsontext.Value(raw), nil
 }
 
-func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prompt string, schema jsontext.Value, output io.Writer) (string, error) {
+func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prompt string, schema jsontext.Value, output io.Writer) (text string, err error) {
 	if a == nil {
 		a = &CursorCloudAgent{}
 	}
@@ -166,12 +175,21 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 	// caller already set, and otherwise uses the host handoff bound.
 	ctx, cancel := a.withTimeout(ctx)
 	defer cancel()
-	// Title is not sent by the v0 client. Leave it empty.
+
+	release, err := a.launchGate().acquire()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
+	// The v0 HTTP body has no title field. Title is still set so the launch
+	// record names the review. repoURL is already stripped of userinfo.
 	created, err := client.CreateAgent(ctx, cursorcloud.CreateAgentRequest{
 		Repo:   repoURL,
 		Ref:    sha,
 		Prompt: cloudPrompt(prompt, schema),
 		Model:  a.Model,
+		Title:  cursorCloudTitle(repoURL, sha),
 	})
 	if err != nil {
 		return "", err
@@ -179,7 +197,15 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 	if output != nil {
 		fmt.Fprintf(output, "cursor-cloud: created agent %s at %s\n", created.ID, sha)
 	}
-	text, err := a.wait(ctx, client, created.ID)
+	// Delete even when the parent context is cancelled. A fresh bounded
+	// context keeps the DELETE off that cancellation.
+	defer func() {
+		delErr := deleteCursorCloudAgent(client, created.ID, output)
+		if delErr != nil && err != nil {
+			err = errors.Join(err, delErr)
+		}
+	}()
+	text, err = a.wait(ctx, client, created.ID)
 	if err != nil {
 		return "", MarkUnavailable(err)
 	}
@@ -215,14 +241,55 @@ func (a *CursorCloudAgent) commitSHA(ctx context.Context, repoPath, ref string) 
 }
 
 func (a *CursorCloudAgent) repoURL(repoPath string) (string, error) {
-	if strings.TrimSpace(a.RepoURL) != "" {
-		return strings.TrimSpace(a.RepoURL), nil
+	raw := strings.TrimSpace(a.RepoURL)
+	if raw == "" {
+		raw = git.GetRemoteURL(repoPath, "")
 	}
-	url := git.GetRemoteURL(repoPath, "")
-	if url == "" {
+	if raw == "" {
 		return "", fmt.Errorf("cursor-cloud: repository %s has no git remote", repoPath)
 	}
-	return url, nil
+	// A credentialed remote (https://user:token@host/...) must not be sent to
+	// Cursor or stored on the launch. Strip before the URL is used anywhere.
+	return config.StripURLCredentials(raw), nil
+}
+
+func deleteCursorCloudAgent(client cursorcloud.Client, id string, output io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), cursorCloudDeleteTimeout)
+	defer cancel()
+	err := client.DeleteAgent(ctx, id)
+	if err == nil {
+		return nil
+	}
+	surfaced := fmt.Errorf("cursor-cloud: delete agent %s: %w", id, err)
+	log.Printf("%s", surfaced.Error())
+	if output != nil {
+		fmt.Fprintln(output, surfaced.Error())
+	}
+	return surfaced
+}
+
+func cursorCloudTitle(repoURL, sha string) string {
+	return "roborev review " + shortRepoName(repoURL) + " " + shortSHA(sha)
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+func shortRepoName(repoURL string) string {
+	name := strings.TrimSpace(repoURL)
+	name = strings.TrimSuffix(name, ".git")
+	name = strings.TrimRight(name, "/")
+	if i := strings.LastIndexAny(name, "/:"); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" {
+		return "repo"
+	}
+	return name
 }
 
 func (a *CursorCloudAgent) wait(ctx context.Context, client cursorcloud.Client, id string) (string, error) {
