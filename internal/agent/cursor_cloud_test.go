@@ -19,6 +19,7 @@ import (
 
 	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
+	"go.kenn.io/roborev/internal/cursorcloud/cursorcloudtest"
 )
 
 const cursorCloudTestSecret = "cursor-test-secret-value-not-a-real-key"
@@ -252,6 +253,129 @@ func TestCursorCloudCreatingAndUnknownStayInProgress(t *testing.T) {
 			assert.Equal(t, 0, fake.archiveCount())
 		})
 	}
+}
+
+func TestCursorCloudReviewKeepsAgentRecord(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	repo := "https://example.com/acme/repo.git"
+	prompt := "look at the nil map"
+
+	assertNoDelete := func(t *testing.T, fake *cursorcloudtest.Fake, wantAgents int) {
+		t.Helper()
+		for _, call := range fake.Calls() {
+			assert.NotContains(t, call.Method, "Archive")
+			assert.NotContains(t, call.Method, "Delete")
+		}
+		listed, err := fake.ListAgents(context.Background())
+		require.NoError(t, err)
+		assert.Len(t, listed, wantAgents)
+		for _, ag := range listed {
+			_, err := fake.GetAgent(context.Background(), ag.ID)
+			require.NoError(t, err)
+		}
+	}
+
+	t.Run("success and rerun", func(t *testing.T) {
+		fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "review text"}
+		a := &CursorCloudAgent{Client: fake, RepoURL: repo}
+		got, err := a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "review text", got)
+		assertNoDelete(t, fake, 1)
+
+		got, err = a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
+		require.NoError(t, err)
+		assert.Equal(t, "review text", got)
+		assertNoDelete(t, fake, 2)
+	})
+
+	t.Run("error", func(t *testing.T) {
+		fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusError}
+		a := &CursorCloudAgent{Client: fake, RepoURL: repo}
+		text, err := a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
+		require.Error(t, err)
+		assert.Empty(t, text)
+		assert.Contains(t, err.Error(), "ERROR")
+		assertNoDelete(t, fake, 1)
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusRunning}
+			a := &CursorCloudAgent{
+				Client: fake, RepoURL: repo,
+				Timeout: time.Second, PollInterval: time.Minute,
+			}
+			text, err := a.Review(context.Background(), t.TempDir(), sha, prompt, nil)
+			require.Error(t, err)
+			assert.Empty(t, text)
+			assert.Contains(t, err.Error(), "timed out")
+			assertNoDelete(t, fake, 1)
+		})
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusRunning}
+			a := &CursorCloudAgent{
+				Client: fake, RepoURL: repo,
+				Timeout: time.Minute, PollInterval: time.Minute,
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				time.Sleep(time.Second)
+				cancel()
+			}()
+			text, err := a.Review(ctx, t.TempDir(), sha, prompt, nil)
+			require.Error(t, err)
+			assert.Empty(t, text)
+			require.ErrorIs(t, err, context.Canceled)
+			assertNoDelete(t, fake, 1)
+		})
+	})
+}
+
+func TestCursorCloudCreatingAndUnknownKeepPolling(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	repo := "https://example.com/acme/repo.git"
+	for _, first := range []cursorcloud.AgentStatus{"CREATING", "QUEUED"} {
+		t.Run(string(first), func(t *testing.T) {
+			fake := &cursorcloudtest.Fake{Final: "review text"}
+			fake.ScriptStatuses("bc_fake_1", first, cursorcloud.StatusFinished)
+			a := &CursorCloudAgent{Client: fake, RepoURL: repo, PollInterval: time.Millisecond}
+			got, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+			require.NoError(t, err)
+			assert.Equal(t, "review text", got)
+			gets := 0
+			for _, call := range fake.Calls() {
+				if call.Method == cursorcloudtest.MethodGet {
+					gets++
+				}
+				assert.NotContains(t, call.Method, "Delete")
+				assert.NotContains(t, call.Method, "Archive")
+			}
+			assert.GreaterOrEqual(t, gets, 2)
+		})
+	}
+}
+
+func TestCursorCloudMissingAssistantMessageHasNoFallback(t *testing.T) {
+	fake := &cursorcloudtest.Fake{
+		CreateStatus: cursorcloud.StatusFinished,
+		MethodErrors: map[string]error{
+			cursorcloudtest.MethodFinal: errors.New("cursor cloud final message: no assistant message"),
+		},
+	}
+	a := &CursorCloudAgent{Client: fake, RepoURL: "https://example.com/acme/repo.git"}
+	text, err := a.Review(context.Background(), t.TempDir(), "0123456789abcdef0123456789abcdef01234567", "prompt", nil)
+	require.Error(t, err)
+	assert.Empty(t, text)
+	assert.Contains(t, err.Error(), "no assistant message")
+	assert.Contains(t, err.Error(), "finished with no assistant message")
+	assert.True(t, IsUnavailable(err))
+	listed, listErr := fake.ListAgents(context.Background())
+	require.NoError(t, listErr)
+	assert.Len(t, listed, 1)
 }
 
 func TestCursorCloudNoAssistantMessageFailsReview(t *testing.T) {
