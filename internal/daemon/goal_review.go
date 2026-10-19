@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	gitrepo "go.kenn.io/kit/git/repo"
@@ -36,6 +37,15 @@ func (s *Server) enqueueGoalReview(ctx context.Context, req EnqueueRequest) (*Ra
 func (s *Server) enqueueGoalReviewWithConfig(ctx context.Context, req EnqueueRequest, configRoot string, captured *goalreview.Snapshot) (*RawJSONOutput, error) {
 	bad := func(err error) (*RawJSONOutput, error) {
 		return rawJSONOutput(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	}
+	if host := strings.TrimSpace(req.Host); host != "" {
+		chosen, err := agent.ReviewHost(host, "", "")
+		if err != nil {
+			return bad(err)
+		}
+		if chosen != agent.ReviewHostLocal {
+			return bad(fmt.Errorf("host %q does not run goal reviews", chosen))
+		}
 	}
 	if req.RepoPath == "" || req.CustomPrompt != "" || req.Agentic || req.GitRef != "" || req.CommitSHA != "" || req.Branch != "" || req.Since != "" || req.Panel != "" || req.DiffContent != "" || len(req.DirtyFiles) > 0 || req.MinSeverity != "" || req.OutputPrefix != "" || (req.JobType != "" && req.JobType != storage.JobTypeGoalReview) {
 		return bad(fmt.Errorf("goal review requires repo_path and rejects commit selectors, panels, custom prompts and agentic inputs"))
