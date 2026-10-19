@@ -25,7 +25,7 @@ func defaultPathEnv(t *testing.T) {
 	t.Helper()
 	for _, kv := range os.Environ() {
 		key, _, _ := strings.Cut(kv, "=")
-		if key == "ROBOREV_HOST_AGENT" || strings.HasPrefix(key, "CURSOR_AGENT") || strings.HasPrefix(key, "CLOUD_AGENT_") {
+		if key == "ROBOREV_HOST_AGENT" || key == "ROBOREV_DEFAULT_HOST" || key == "CURSOR_API_KEY" || strings.HasPrefix(key, "CURSOR_AGENT") || strings.HasPrefix(key, "CLOUD_AGENT_") {
 			t.Setenv(key, "")
 			require.NoError(t, os.Unsetenv(key))
 		}

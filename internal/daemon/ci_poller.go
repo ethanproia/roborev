@@ -1335,6 +1335,18 @@ func (p *CIPoller) resolveMatrixMemberAgent(
 	reasoning string,
 ) (string, string, string, string, error) {
 	workflow := config.WorkflowForReviewType(entry.ReviewType)
+	repoHost, globalHost := "", ""
+	if repoCfg != nil {
+		repoHost = repoCfg.Host
+	}
+	if cfg != nil {
+		globalHost = cfg.Host
+	}
+	if host, err := agent.ReviewHost("", repoHost, globalHost); err != nil {
+		return "", "", "", "", err
+	} else if host != agent.ReviewHostLocal && entry.ReviewType != config.ReviewTypeGoal {
+		return host, "", "", "", nil
+	}
 	resolution, err := agent.ResolveWorkflowConfigFromConfig(entry.Agent, repoCfg, cfg, workflow, reasoning)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("resolve workflow config: %w", err)

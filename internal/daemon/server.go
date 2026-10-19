@@ -3022,6 +3022,11 @@ func (s *Server) humaEnqueue(
 	}
 
 	merged := config.MergeReviewConfigFromConfig(repoCfg, cfg)
+	if host, early := resolveEnqueueHost(workflow, req.ReviewType, req.JobType, req.Host, repoCfg, cfg); early != nil {
+		return early, nil
+	} else if host != agent.ReviewHostLocal {
+		req.Panel = "none"
+	}
 	panelName := selectPanelForTarget(descriptor, req, merged)
 	if panelName != "" {
 		return s.enqueuePanelRun(ctx, panelRunInputs{
@@ -3104,6 +3109,11 @@ type resolvedSingleAgent struct {
 func (s *Server) resolveSingleAgent(
 	in singleAgentInputs,
 ) (resolvedSingleAgent, *RawJSONOutput) {
+	if host, early := resolveEnqueueHost(in.workflow, in.req.ReviewType, in.req.JobType, in.req.Host, in.repoCfg, in.cfg); early != nil {
+		return resolvedSingleAgent{}, early
+	} else if host != agent.ReviewHostLocal {
+		return resolvedSingleAgent{Agent: host, Model: in.requestedModel}, nil
+	}
 	resolution, err := agent.ResolveWorkflowConfigFromConfig(
 		in.req.Agent, in.repoCfg, in.cfg, in.workflow, in.reasoning,
 	)
