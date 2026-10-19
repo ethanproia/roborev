@@ -162,6 +162,10 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 	if err != nil {
 		return "", err
 	}
+	// Every cloud call runs under a deadline. withTimeout keeps one the
+	// caller already set, and otherwise uses the host handoff bound.
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
 	// Title is not sent by the v0 client. Leave it empty.
 	created, err := client.CreateAgent(ctx, cursorcloud.CreateAgentRequest{
 		Repo:   repoURL,
@@ -287,7 +291,8 @@ func cloudFinalMessage(ctx context.Context, client cursorcloud.Client, id string
 }
 
 func noAssistantMessage(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "no assistant message")
+	return errors.Is(err, cursorcloud.ErrNoAssistantMessage) ||
+		(err != nil && strings.Contains(err.Error(), "no assistant message"))
 }
 
 func cloudPrompt(prompt string, schema jsontext.Value) string {
