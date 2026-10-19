@@ -146,11 +146,10 @@ func TestCursorAPIKeyNeverLogged(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, CursorCloudHost, host)
 
-	_, err = cursorcloud.NewFromEnv()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), cursorcloud.EnvAPIKey)
-	assert.NotContains(t, err.Error(), cursorCloudTestSecret)
-	assert.Contains(t, err.Error(), "replaced by slice 4")
+	client, err := cursorcloud.NewFromEnv()
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.NotContains(t, logs.String(), cursorCloudTestSecret)
 
 	fake := &fakeCloud{status: cursorcloud.StatusFinished, message: `{"ok":true}`}
 	a := &CursorCloudAgent{Client: fake, RepoURL: "https://example.com/acme/repo.git"}
