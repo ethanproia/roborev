@@ -24,9 +24,8 @@ const (
 	// CURSOR_API_KEY never selects a host.
 	EnvDefaultHost = "ROBOREV_DEFAULT_HOST"
 
-	cursorCloudAgentName    = CursorCloudHost
-	cursorCloudMaxPoll      = 5 * time.Second
-	cursorCloudArchiveLimit = 15 * time.Second
+	cursorCloudAgentName = CursorCloudHost
+	cursorCloudMaxPoll   = 5 * time.Second
 )
 
 // cursorCloudSafety is sent with every cloud review. The API has no fields
@@ -147,7 +146,7 @@ func (a *CursorCloudAgent) ReviewWithSchema(ctx context.Context, repoPath, gitRe
 	return jsontext.Value(raw), nil
 }
 
-func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prompt string, schema jsontext.Value, output io.Writer) (result string, err error) {
+func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prompt string, schema jsontext.Value, output io.Writer) (string, error) {
 	if a == nil {
 		a = &CursorCloudAgent{}
 	}
@@ -163,20 +162,13 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 	if err != nil {
 		return "", err
 	}
+	// Title is not sent by the v0 client. Leave it empty.
 	created, err := client.CreateAgent(ctx, cursorcloud.CreateAgentRequest{
 		Repo:   repoURL,
 		Ref:    sha,
 		Prompt: cloudPrompt(prompt, schema),
 		Model:  a.Model,
-		Title:  cloudTitle(sha),
 	})
-	if created.ID != "" {
-		defer func() {
-			if aerr := archiveCloudAgent(ctx, client, created.ID); aerr != nil && err == nil {
-				err = fmt.Errorf("cursor-cloud: archive agent: %w", aerr)
-			}
-		}()
-	}
 	if err != nil {
 		return "", err
 	}
@@ -240,9 +232,11 @@ func (a *CursorCloudAgent) wait(ctx context.Context, client cursorcloud.Client, 
 		}
 		switch ag.Status {
 		case cursorcloud.StatusFinished:
-			return client.FinalMessage(ctx, id)
+			return cloudFinalMessage(ctx, client, id)
 		case cursorcloud.StatusError, cursorcloud.StatusExpired:
 			return "", fmt.Errorf("cursor-cloud agent %s ended %s", id, ag.Status)
+		default:
+			// CREATING, and any status outside the contract, is still running.
 		}
 		timer := time.NewTimer(interval)
 		select {
@@ -281,10 +275,19 @@ func (a *CursorCloudAgent) pollInterval() time.Duration {
 	return defaultHostPollInterval
 }
 
-func archiveCloudAgent(ctx context.Context, client cursorcloud.Client, id string) error {
-	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cursorCloudArchiveLimit)
-	defer cancel()
-	return client.ArchiveAgent(actx, id)
+func cloudFinalMessage(ctx context.Context, client cursorcloud.Client, id string) (string, error) {
+	text, err := client.FinalMessage(ctx, id)
+	if err == nil {
+		return text, nil
+	}
+	if noAssistantMessage(err) {
+		return "", fmt.Errorf("cursor-cloud agent %s finished with no assistant message: %w", id, err)
+	}
+	return "", err
+}
+
+func noAssistantMessage(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no assistant message")
 }
 
 func cloudPrompt(prompt string, schema jsontext.Value) string {
@@ -297,14 +300,6 @@ func cloudPrompt(prompt string, schema jsontext.Value) string {
 		b.Write(schema)
 	}
 	return b.String()
-}
-
-func cloudTitle(sha string) string {
-	short := sha
-	if len(short) > 12 {
-		short = short[:12]
-	}
-	return "roborev review " + short
 }
 
 func isFullSHA(ref string) bool {
