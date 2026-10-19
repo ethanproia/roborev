@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -351,6 +352,55 @@ func TestHTTPContextPropagates(t *testing.T) {
 	cancel()
 	_, err = client.GetAgent(ctx, "bc_1")
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestHTTPGETRetriesAndPOSTDoesNot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var gets, posts int
+		hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if r.Method == http.MethodPost {
+				posts++
+				return jsonResponse(http.StatusServiceUnavailable, `{"message":"down"}`), nil
+			}
+			gets++
+			if gets < 3 {
+				resp := jsonResponse(http.StatusBadGateway, `{"message":"later"}`)
+				resp.Header.Set("Retry-After", "1")
+				return resp, nil
+			}
+			return jsonResponse(http.StatusOK, `{"id":"bc_1","name":"n","status":"RUNNING"}`), nil
+		})}
+		client := cursorcloud.NewHTTPClient(testKey, cursorcloud.WithHTTPClient(hc))
+		start := time.Now()
+		_, err := client.GetAgent(context.Background(), "bc_1")
+		require.NoError(t, err)
+		assert.Equal(t, 3, gets)
+		assert.GreaterOrEqual(t, time.Since(start), 2*time.Second)
+
+		_, err = client.CreateAgent(context.Background(), cursorcloud.CreateAgentRequest{
+			Repo: "https://example.com/acme/repo.git", Prompt: "review",
+		})
+		require.Error(t, err)
+		assert.Equal(t, 1, posts)
+	})
+}
+
+func TestHTTPRetryStopsWhenContextCanceled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		hc := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			resp := jsonResponse(http.StatusTooManyRequests, `{"message":"slow"}`)
+			resp.Header.Set("Retry-After", "3600")
+			return resp, nil
+		})}
+		client := cursorcloud.NewHTTPClient(testKey, cursorcloud.WithHTTPClient(hc))
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(time.Second)
+			cancel()
+		}()
+		_, err := client.GetAgent(ctx, "bc_1")
+		require.ErrorIs(t, err, context.Canceled)
+	})
 }
 
 func TestHTTPTransportErrorRedactsKeyInURL(t *testing.T) {

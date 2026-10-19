@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -47,6 +48,15 @@ const maxResponseBytes = 8 << 20
 // daemon HTTP errors (internal/mcpserver maxErrorBodyBytes). A non-2xx body
 // is not copied in full into APIError.Message.
 const maxErrorMessageBytes = 64 << 10
+
+// maxGETAttempts is the total number of tries for one retryable GET.
+// Create stays a single POST.
+const maxGETAttempts = 3
+
+const (
+	retryBaseDelay = 200 * time.Millisecond
+	retryMaxDelay  = 2 * time.Second
+)
 
 // Option configures an HTTP client.
 type Option func(*httpClient)
@@ -360,41 +370,115 @@ func (c *httpClient) do(ctx context.Context, op, method, path string, in, out an
 			return c.redactErr(fmt.Errorf("cursor cloud: encode request: %w", err))
 		}
 	}
-	var body io.Reader
-	if payload != nil {
-		body = bytes.NewReader(payload)
+	attempts := 1
+	if method == http.MethodGet {
+		attempts = maxGETAttempts
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return c.redactErr(fmt.Errorf("cursor cloud: build request: %w", err))
-	}
-	req.Header.Set("Authorization", c.authorization())
-	req.Header.Set("Accept", "application/json")
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return c.redactErr(fmt.Errorf("cursor cloud: %w", err))
-	}
-	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return c.redactErr(fmt.Errorf("cursor cloud: read response: %w", err))
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return c.apiError(op, resp.StatusCode, data)
-	}
-	if out == nil {
+	var wait time.Duration
+	for try := range attempts {
+		if try > 0 {
+			if err := waitRetry(ctx, wait); err != nil {
+				return c.redactErr(err)
+			}
+		}
+		var body io.Reader
+		if payload != nil {
+			body = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+		if err != nil {
+			return c.redactErr(fmt.Errorf("cursor cloud: build request: %w", err))
+		}
+		req.Header.Set("Authorization", c.authorization())
+		req.Header.Set("Accept", "application/json")
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			return c.redactErr(fmt.Errorf("cursor cloud: %w", err))
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return c.redactErr(fmt.Errorf("cursor cloud: read response: %w", readErr))
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if method == http.MethodGet && retryableStatus(resp.StatusCode) && try+1 < attempts {
+				wait = retryDelay(resp, try)
+				continue
+			}
+			return c.apiError(op, resp.StatusCode, data)
+		}
+		if out == nil {
+			return nil
+		}
+		if len(bytes.TrimSpace(data)) == 0 {
+			return errors.New("cursor cloud " + op + ": empty response")
+		}
+		if err := json.Unmarshal(data, out); err != nil {
+			return c.redactErr(fmt.Errorf("cursor cloud %s: decode response: %w", op, err))
+		}
 		return nil
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return errors.New("cursor cloud " + op + ": empty response")
+	return errors.New("cursor cloud " + op + ": retries exhausted")
+}
+
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
 	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return c.redactErr(fmt.Errorf("cursor cloud %s: decode response: %w", op, err))
+}
+
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	if resp != nil {
+		if d, ok := retryAfter(resp.Header.Get("Retry-After")); ok {
+			return d
+		}
 	}
-	return nil
+	d := retryBaseDelay << attempt
+	if d > retryMaxDelay || d <= 0 {
+		d = retryMaxDelay
+	}
+	return d + time.Duration(rand.Int64N(int64(d/5)+1))
+}
+
+func retryAfter(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(raw); err == nil {
+		if secs < 0 {
+			secs = 0
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	when, err := http.ParseTime(raw)
+	if err != nil {
+		return 0, false
+	}
+	if d := time.Until(when); d > 0 {
+		return d, true
+	}
+	return 0, true
+}
+
+func waitRetry(ctx context.Context, d time.Duration) error {
+	if d < 0 {
+		d = 0
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *httpClient) endpoint(rawPath string) (string, error) {
