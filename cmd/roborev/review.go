@@ -51,6 +51,7 @@ func reviewCmd() *cobra.Command {
 		repoPath    string
 		sha         string
 		agent       string
+		host        string
 		model       string
 		reasoning   string
 		reviewType  string
@@ -127,6 +128,9 @@ Examples:
 			}
 
 			if reviewType == config.ReviewTypeGoal {
+				if explicit := strings.TrimSpace(host); explicit != "" && !strings.EqualFold(explicit, "local") {
+					return fmt.Errorf("host %q does not run goal reviews", explicit)
+				}
 				if len(args) != 0 {
 					return usageErr(cmd, fmt.Errorf("goal review takes no commit arguments"))
 				}
@@ -369,7 +373,7 @@ Examples:
 				if panel != "" && panel != "none" && !quiet {
 					cmd.PrintErrf("Note: --panel %q is ignored with --local (panels require the daemon); running a single-agent review.\n", panel)
 				}
-				return runLocalReview(cmd, root, gitRef, diffContent, dirtyFiles, agent, model, provider, reasoning, reviewType, quiet, minSeverity)
+				return runLocalReview(cmd, root, gitRef, diffContent, dirtyFiles, agent, host, model, provider, reasoning, reviewType, quiet, minSeverity)
 			}
 
 			// Build request body
@@ -378,6 +382,7 @@ Examples:
 				GitRef:      gitRef,
 				Branch:      branchName,
 				Agent:       agent,
+				Host:        host,
 				Model:       model,
 				Provider:    provider,
 				Reasoning:   reasoning,
@@ -447,6 +452,7 @@ Examples:
 	cmd.Flags().StringVar(&repoPath, "repo", "", "path to git repository (default: current directory)")
 	cmd.Flags().StringVar(&sha, "sha", "HEAD", "commit SHA to review (used when no positional args)")
 	cmd.Flags().StringVar(&agent, "agent", "", "agent to use (codex, claude-code, gemini, copilot, opencode, cursor, kiro, kilo, droid, pi, grok)")
+	cmd.Flags().StringVar(&host, "host", "", "review host: local (default), host, or cursor-cloud. CURSOR_API_KEY alone does not select cursor-cloud")
 	cmd.Flags().StringVar(&model, "model", "", "model for agent (format varies: opencode uses provider/model, others use model name)")
 	cmd.Flags().StringVar(&reasoning, "reasoning", "", "reasoning level: legacy presets fast, standard, thorough (default), maximum; exact tiers low, medium, high, xhigh, max")
 	cmd.Flags().BoolVar(&fast, "fast", false, "shorthand for --reasoning fast")
@@ -472,7 +478,7 @@ Examples:
 }
 
 // runLocalReview runs a review directly without the daemon
-func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, dirtyFiles []string, agentName, model, provider, reasoning, reviewType string, quiet bool, minSeverity string) error {
+func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, dirtyFiles []string, agentName, hostName, model, provider, reasoning, reviewType string, quiet bool, minSeverity string) error {
 	ctx := cmd.Context()
 
 	// Load config
@@ -515,10 +521,25 @@ func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, di
 		return fmt.Errorf("resolve workflow config: %w", err)
 	}
 
-	// Get the agent (try backup before hardcoded chain)
-	a, err := agent.GetPreferredOrBackupWithConfig(
-		repoPath, resolution.PreferredAgent, cfg, resolution.BackupAgent,
-	)
+	repoHost := ""
+	if repoCfg != nil {
+		repoHost = repoCfg.Host
+	}
+	chosenHost, err := agent.ReviewHost(hostName, repoHost, cfg.Host)
+	if err != nil {
+		return err
+	}
+
+	// Get the agent (try backup before hardcoded chain). An explicit host
+	// does not fall through to that chain.
+	var a agent.Agent
+	if chosenHost != agent.ReviewHostLocal {
+		a, err = agent.Get(chosenHost)
+	} else {
+		a, err = agent.GetPreferredOrBackupWithConfig(
+			repoPath, resolution.PreferredAgent, cfg, resolution.BackupAgent,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("get agent: %w", err)
 	}
@@ -527,10 +548,14 @@ func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, di
 	// handles backup-vs-primary model resolution.
 	reasoningLevel := agent.ParseReasoningLevel(reasoning)
 	a = a.WithReasoning(reasoningLevel)
-	a, model = applyModelForAgent(
-		a, resolution.PreferredAgent, resolution.BackupAgent,
-		model, repoPath, cfg, workflow, reasoning,
-	)
+	if chosenHost == agent.ReviewHostLocal {
+		a, model = applyModelForAgent(
+			a, resolution.PreferredAgent, resolution.BackupAgent,
+			model, repoPath, cfg, workflow, reasoning,
+		)
+	} else if model != "" {
+		a = a.WithModel(model)
+	}
 	a = agent.WithCodexSkillsDisabled(
 		a,
 		config.ResolveDisableCodexReviewSkills(repoPath, cfg),
