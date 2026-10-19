@@ -1,6 +1,6 @@
 // Package cursorcloud is an opt-in client for the public Cursor Cloud Agents
-// v0 API (https://cursor.com/docs/cloud-agent/api/v0). Nothing in roborev
-// calls it yet.
+// v0 API (https://cursor.com/docs/cloud-agent/api/v0). The cursor-cloud review
+// host calls it when that host is selected.
 //
 // v0 authenticates with HTTP Basic: the API key is the username and the
 // password is empty (curl -u KEY:). The key is never written to logs or errors.
@@ -256,6 +256,16 @@ func (c *httpClient) FinalMessage(ctx context.Context, id string) (string, error
 		}
 	}
 	return "", ErrNoAssistantMessage
+}
+
+func (c *httpClient) DeleteAgent(ctx context.Context, id string) error {
+	path, err := agentPath(id)
+	if err != nil {
+		return err
+	}
+	// v0 has no archive endpoint. DELETE /v0/agents/{id} permanently deletes
+	// the agent. https://cursor.com/docs/cloud-agent/api/v0#delete-an-agent
+	return c.do(ctx, "delete agent", http.MethodDelete, path, nil, nil)
 }
 
 func (c *httpClient) ListAgents(ctx context.Context) ([]Agent, error) {

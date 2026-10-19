@@ -1651,7 +1651,7 @@ func (wp *WorkerPool) failOrRetryAgentContext(
 // failing over would only hide the missing marker.
 func (wp *WorkerPool) failGetAgentContext(ctx context.Context, workerID string, job *storage.ReviewJob, err error) {
 	errorMsg := fmt.Sprintf("get agent: %v", err)
-	if !agent.IsHostUnavailable(err) {
+	if !agent.IsHostUnavailable(err) && !agent.IsCursorCloudConfig(err) {
 		wp.failOrRetryAgentContext(ctx, workerID, job, job.Agent, errorMsg)
 		return
 	}
@@ -1896,6 +1896,11 @@ func failoverWorkflow(job *storage.ReviewJob) string {
 // Personal CI jobs use only a stored, locally resolved backup. Ordinary jobs
 // retain the workflow-config fallback.
 func (wp *WorkerPool) resolveBackupAgent(job *storage.ReviewJob) string {
+	if job != nil && agent.CanonicalName(job.Agent) == agent.CursorCloudHost {
+		// An explicit cursor-cloud review fails closed. It does not fail over
+		// onto a local agent.
+		return ""
+	}
 	// An explicit per-job backup wins, for reliability: the enqueuer (e.g. a CI
 	// panel synthesis) chose this failover deliberately. Canonicalize the alias
 	// (e.g. "claude" -> "claude-code") via the registry; fall back to the raw

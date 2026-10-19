@@ -249,6 +249,7 @@ type Config struct {
 	ReviewGuidelines           string                          `toml:"review_guidelines" comment:"Extra review instructions added to prompts globally."`
 	FixGuidelines              string                          `toml:"fix_guidelines" comment:"Policy for evaluating review findings during automated fixes."`
 	DefaultAgent               string                          `toml:"default_agent" comment:"Default agent when no workflow-specific agent is set."`
+	Host                       string                          `toml:"host" comment:"Review host: local (default), host, or cursor-cloud. Empty inherits ROBOREV_DEFAULT_HOST, then local. CURSOR_API_KEY alone does not select cursor-cloud."`
 	DefaultModel               string                          `toml:"default_model"` // Default model for agents (format varies by agent)
 	DefaultBackupAgent         string                          `toml:"default_backup_agent"`
 	DefaultBackupModel         string                          `toml:"default_backup_model"`
@@ -777,6 +778,7 @@ func (c *Config) Validate() (err error) {
 type RepoConfig struct {
 	experimentOverlay               map[string]any
 	Agent                           string                          `toml:"agent" comment:"Default agent for this repo when no workflow-specific agent is set."`
+	Host                            string                          `toml:"host" comment:"Review host for this repo: local, host, or cursor-cloud. Empty inherits the global host, then ROBOREV_DEFAULT_HOST."`
 	Model                           string                          `toml:"model" comment:"Default model for this repo when no workflow-specific model is set."` // Model for agents (format varies by agent)
 	BackupAgent                     string                          `toml:"backup_agent" comment:"Backup agent for this repo if the primary agent fails."`
 	BackupModel                     string                          `toml:"backup_model" comment:"Backup model for this repo if the primary model fails."`
@@ -2587,6 +2589,12 @@ func ResolveRepoIdentity(repoPath string, getRemoteURL func(repoPath, remoteName
 		absPath = repoPath
 	}
 	return "local://" + absPath
+}
+
+// StripURLCredentials removes userinfo from a URL before it is sent or stored.
+// See stripURLCredentials for the non-URL cases that stay unchanged.
+func StripURLCredentials(rawURL string) string {
+	return stripURLCredentials(rawURL)
 }
 
 // stripURLCredentials removes userinfo (username:password) from a URL.

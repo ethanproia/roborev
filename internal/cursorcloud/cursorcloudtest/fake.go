@@ -16,6 +16,7 @@ const (
 	MethodCreate = "CreateAgent"
 	MethodGet    = "GetAgent"
 	MethodFinal  = "FinalMessage"
+	MethodDelete = "DeleteAgent"
 	MethodList   = "ListAgents"
 )
 
@@ -182,6 +183,29 @@ func (f *Fake) FinalMessage(ctx context.Context, id string) (string, error) {
 		return f.Final, nil
 	}
 	return "", cursorcloud.ErrNoAssistantMessage
+}
+
+func (f *Fake) DeleteAgent(ctx context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.init()
+	if err := f.fail(ctx, MethodDelete, id, cursorcloud.CreateAgentRequest{}); err != nil {
+		return err
+	}
+	if _, ok := f.agents[id]; !ok {
+		return fmt.Errorf("cursor cloud fake: agent %s not found", id)
+	}
+	delete(f.agents, id)
+	delete(f.finals, id)
+	delete(f.scripts, id)
+	next := make([]string, 0, len(f.order))
+	for _, existing := range f.order {
+		if existing != id {
+			next = append(next, existing)
+		}
+	}
+	f.order = next
+	return nil
 }
 
 func (f *Fake) ListAgents(ctx context.Context) ([]cursorcloud.Agent, error) {

@@ -1,5 +1,5 @@
 ---
-last_edited: 2026-10-03
+last_edited: 2026-10-19
 title: Configuration
 description: Configure roborev behavior globally and per-repository
 ---
@@ -247,6 +247,7 @@ max_chars = 50000
 | Option | Type | Description |
 |--------|------|-------------|
 | `agent` | string | AI agent to use for this repo |
+| `host` | string | Review host for this repo: `local` (default), `host`, or `cursor-cloud`. Empty inherits the global `host`. `CURSOR_API_KEY` alone does not select `cursor-cloud` |
 | `model` | string | Model to use (overrides global `default_model`) |
 | `display_name` | string | Custom name shown in TUI |
 | `review_context_count` | int | Number of recent reviews to include as context |
@@ -1096,6 +1097,7 @@ filter_branch = false             # Show all branches on startup (default: curre
 | Option | Type | Default | Description | Hot-Reload |
 |--------|------|---------|-------------|------------|
 | `default_agent` | string | auto-detect | Default AI agent to use. `auto` uses the availability order (with `host` as the last resort only under `ROBOREV_HOST_AGENT=1`) and pairs `default_model` only when it lands on `default_agent` (a workflow model beside `auto` is never paired). `host` hands reviews to an attached host model and runs only when named here or as a backup with `ROBOREV_HOST_AGENT=1`; detection of a Cursor cloud agent never substitutes for the marker; listings show it only with `ROBOREV_HOST_AGENT=1` | Yes |
+| `host` | string | local | Review host. `local` keeps today's agent selection. `cursor-cloud` is opt-in and needs `CURSOR_API_KEY`. `host` still needs `ROBOREV_HOST_AGENT=1`. `CURSOR_API_KEY` alone does not select a host. Empty inherits `ROBOREV_DEFAULT_HOST`, then `local` | Yes |
 | `default_backup_agent` | string | - | Fallback agent when the primary is unavailable or fails. `auto` picks the first available agent, other than the primary, that can run the job, with no model; `host` is that last resort only under `ROBOREV_HOST_AGENT=1`. Ordinary enqueue, CI, panel, fix and goal reviews pin an `auto` backup when queued and keep it, even when nothing was found. A named backup on an ordinary review is resolved at failover unless an experiment freezes it | Yes |
 | `default_backup_model` | string | - | Model paired with `default_backup_agent` | Yes |
 | `default_model` | string | agent default | Model to use (format varies by agent) | Yes |
@@ -1169,6 +1171,55 @@ put instructions in that change. Anyone who can write the handoff directory can
 also replace `prompt.md` or plant `answer.md`, which roborev reads as the
 review. Point `ROBOREV_HOST_DIR` at a directory only the daemon's user can
 write. roborev logs a warning when that directory is group- or world-writable.
+
+### Cursor cloud host
+
+Ordinary reviews stay on the local agent. `cursor-cloud` is off unless you
+choose it. Setting `CURSOR_API_KEY` does not select it, and the defaults above
+do not change.
+
+Enable it in one of these ways:
+
+- `roborev review --host cursor-cloud`
+- `host = "cursor-cloud"` in `~/.roborev/config.toml` or `.roborev.toml` (the
+  repo value wins)
+- `ROBOREV_DEFAULT_HOST=cursor-cloud` in the environment the daemon runs in
+
+`--host` wins over config, and config wins over `ROBOREV_DEFAULT_HOST`.
+`local` keeps today's agent selection. `host` is the attached host model and
+still requires `ROBOREV_HOST_AGENT=1`. An explicit `cursor-cloud` without
+`CURSOR_API_KEY` is an error; roborev does not fall back to a local agent. An
+explicit `host` without `ROBOREV_HOST_AGENT=1` is the same kind of error.
+
+The cloud review is created at the exact commit SHA and polled until it
+finishes. `CREATING` and any other unknown status stay in progress. The
+agent's final assistant message is the review. A finished agent with no
+assistant message fails that review. roborev deletes that agent when the
+review ends, on success, error, timeout, and cancellation. A delete failure
+is logged and reported, and the review result stays the one the agent
+returned. Userinfo is removed from the repository URL before it is sent or
+stored. Goal reviews and fix jobs stay on the local agent.
+
+Launch limits are checked before the agent is created. The defaults are 4
+concurrent launches and 60 launches in a rolling hour. 4 matches the default
+worker count. 60 is one launch a minute. A launch past either limit returns
+an error and creates no agent. A finished review frees its concurrent slot
+after the agent is deleted. A launch stops counting one hour after it
+started.
+
+Set `ROBOREV_CURSOR_CLOUD_MAX_CONCURRENT` and
+`ROBOREV_CURSOR_CLOUD_MAX_PER_HOUR` to a positive integer to change a limit.
+An unset, zero, or invalid value keeps the default.
+
+The request tells the agent to avoid shell tools, ignore the repository's
+`.cursor` configuration, skip `environment.json` setup, not write to the
+repository, and read only the tree at that commit.
+
+!!! note "Limitation: the API cannot enforce the sandbox"
+
+    `CreateAgent` has no fields to disable shell tools, ignore `.cursor`,
+    skip `environment.json`, or confine reads. Those rules are prompt text.
+    The Cursor API cannot enforce them.
 
 ### Review Search Embeddings
 

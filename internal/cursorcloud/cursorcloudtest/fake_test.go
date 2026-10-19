@@ -50,6 +50,13 @@ func TestFakeLifecycleAndCalls(t *testing.T) {
 	assert.Equal(t, created.ID, listed[0].ID)
 	assert.Equal(t, other.ID, listed[1].ID)
 
+	require.NoError(t, fake.DeleteAgent(ctx, created.ID))
+	listed, err = fake.ListAgents(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []cursorcloud.Agent{other}, listed)
+	_, err = fake.GetAgent(ctx, created.ID)
+	require.ErrorContains(t, err, "not found")
+
 	calls := fake.Calls()
 	require.GreaterOrEqual(t, len(calls), 2)
 	assert.Equal(t, MethodCreate, calls[0].Method)
