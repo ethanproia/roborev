@@ -79,6 +79,9 @@ func (db *DB) MarkCloudLaunchCleaned(launchID int64) error {
 // changes only inside MarkCloudLaunchCleaned. Callers mark cleaned only
 // after a nil or 404 delete of every VM this token could own.
 func (db *DB) MarkCloudLaunchCleanedByToken(jobID, repoID int64, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return fmt.Errorf("cursor-cloud: blank launch token was not cleaned")
+	}
 	rows, err := db.Query(`SELECT l.id
 		FROM review_job_cloud_launches l
 		LEFT JOIN review_jobs j ON j.id = l.job_id

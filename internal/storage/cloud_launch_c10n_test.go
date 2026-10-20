@@ -115,6 +115,34 @@ func TestMarkCloudLaunchCleanedByTokenMarksMatchingRow(t *testing.T) {
 	assert.Empty(note)
 }
 
+// TestMarkCloudLaunchCleanedByTokenRejectsBlankToken is the direct-call pin.
+// A blank token is not a launch token. The call must not mark the blank row,
+// or any other row, cleaned.
+func TestMarkCloudLaunchCleanedByTokenRejectsBlankToken(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	repo, _, job := createJobChain(t, db, t.TempDir(), "blank111")
+	_, err := db.Exec(`INSERT INTO review_job_cloud_launches
+		(job_id, launch_token, orphan_note) VALUES
+		(?, '', 'blank-note'),
+		(?, '', 'blank-note-2'),
+		(?, 'real-tok', 'real-note')`, job.ID, job.ID, job.ID)
+	require.NoError(t, err)
+
+	for _, token := range []string{"", " ", "\t"} {
+		err := db.MarkCloudLaunchCleanedByToken(job.ID, repo.ID, token)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "blank")
+	}
+	var cleaned int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM review_job_cloud_launches WHERE cleaned = 1`).Scan(&cleaned))
+	assert.Equal(t, 0, cleaned)
+	var note string
+	require.NoError(t, db.QueryRow(`SELECT orphan_note FROM review_job_cloud_launches WHERE launch_token = 'real-tok'`).Scan(&note))
+	assert.Equal(t, "real-note", note)
+}
+
 func TestPostgresCloudLaunchDuplicateTokenRejected(t *testing.T) { //nolint:paralleltest // shares the roborev schema in the PostgreSQL database at TEST_POSTGRES_URL
 	pool := openTestPgPool(t)
 	ctx := t.Context()
