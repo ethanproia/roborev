@@ -92,9 +92,10 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	if err != nil {
 		return err
 	}
-	// A token with no saved agent id is cleaned only when this list contained
-	// it. An empty list is the lag, not a confirmed delete.
-	if row.AgentID == "" && !found {
+	// An empty list is publish lag, not a confirmed delete, even when the
+	// saved id was removed above. The row stays uncleaned until a matching
+	// agent is deleted. Past the age window the miss is an orphan risk.
+	if !found {
 		if cloudLaunchAgedOut(row.CreatedAt, time.Now().UTC()) {
 			return reportCloudLaunchOrphan(db, row)
 		}
