@@ -1920,8 +1920,10 @@ func (wp *WorkerPool) failWithoutRetryLocked(
 	}
 }
 
-// explicitCursorCloudHost reports a cursor-cloud job whose host was chosen
-// in repo or global config. ROBOREV_DEFAULT_HOST alone is implicit.
+// explicitCursorCloudHost reports a cursor-cloud job whose repo or global
+// config host is cursor-cloud. Jobs enqueued before explicit_host existed
+// still use this live check. --host and ROBOREV_DEFAULT_HOST are stored on
+// the job and do not need a second read.
 func (wp *WorkerPool) explicitCursorCloudHost(job *storage.ReviewJob) bool {
 	if wp == nil || wp.cfgGetter == nil || job == nil {
 		return false
@@ -1955,10 +1957,11 @@ func failoverWorkflow(job *storage.ReviewJob) string {
 // Personal CI jobs use only a stored, locally resolved backup. Ordinary jobs
 // retain the workflow-config fallback.
 func (wp *WorkerPool) resolveBackupAgent(job *storage.ReviewJob) string {
-	// --host is stored on the job. A repo or global host = cursor-cloud is
-	// also explicit. Either one refuses every backup, including the workflow
-	// backup resolved below. ROBOREV_DEFAULT_HOST alone leaves the bit unset
-	// and may still fail over.
+	// --host, repo or global host, and ROBOREV_DEFAULT_HOST are stored on
+	// the job when they select cursor-cloud. That bit, and a live repo or
+	// global host for older rows, refuses every backup, including the
+	// workflow backup resolved below. A cursor-cloud agent with no host
+	// source may still fail over to a non-cloud backup.
 	if job != nil && agent.CanonicalName(job.Agent) == agent.CursorCloudHost &&
 		(job.ExplicitHost || wp.explicitCursorCloudHost(job)) {
 		return ""

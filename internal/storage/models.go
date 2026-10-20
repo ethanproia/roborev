@@ -157,7 +157,7 @@ type ReviewJob struct {
 
 	BudgetRoutingLocked       bool   `json:"-"` // Local retry/failover scheduling guard
 	BackupAuto                bool   `json:"-"` // BackupAgent is an "auto" pin, even if empty
-	ExplicitHost              bool   `json:"-"` // Enqueue --host selected this job's host
+	ExplicitHost              bool   `json:"-"` // Enqueue stored cursor-cloud from flag, config, or ROBOREV_DEFAULT_HOST
 	BudgetOriginalAgent       string `json:"-"` // Pre-budget choice restored on manual rerun
 	BudgetOriginalBackupAgent string `json:"-"`
 	BudgetOriginalBackupModel string `json:"-"`
