@@ -140,3 +140,53 @@ Red, the call at line 208 removed. The goal call at line 134 was left in place. 
         local_review_test.go:169: same missing refusal
 FAIL go.kenn.io/roborev/cmd/roborev 0.083s
 ```
+
+## Repo host versus global host at the line 208 call
+
+The earlier `.roborev.toml host` cell is the repo config. `writeConfig` writes
+`filepath.Join(h.Dir, ".roborev.toml")` (`cmd/roborev/local_review_test.go:44`).
+It does not write `config.GlobalConfigPath()`.
+
+`TestLocalReviewRefusesCursorCloudHost` had no global `host` cell. Commit
+`ca5d2487` adds one. It sets `ROBOREV_DATA_DIR` and writes
+`host = "cursor-cloud"` through `config.GlobalConfigPath()`. The repo cell is
+unchanged.
+
+Green, with the `refuseLocalCursorCloud` call at `review.go:208` present
+(`ROBOREV_TELEMETRY_ENABLED=0`):
+
+```
+=== RUN   TestLocalReviewRefusesCursorCloudHost
+=== RUN   TestLocalReviewRefusesCursorCloudHost/--host
+=== RUN   TestLocalReviewRefusesCursorCloudHost/.roborev.toml_host
+=== RUN   TestLocalReviewRefusesCursorCloudHost/global_config
+=== RUN   TestLocalReviewRefusesCursorCloudHost/ROBOREV_DEFAULT_HOST
+--- PASS: TestLocalReviewRefusesCursorCloudHost (0.03s)
+    --- PASS: TestLocalReviewRefusesCursorCloudHost/--host (0.02s)
+    --- PASS: TestLocalReviewRefusesCursorCloudHost/.roborev.toml_host (0.00s)
+    --- PASS: TestLocalReviewRefusesCursorCloudHost/global_config (0.00s)
+    --- PASS: TestLocalReviewRefusesCursorCloudHost/ROBOREV_DEFAULT_HOST (0.00s)
+PASS
+ok  	go.kenn.io/roborev/cmd/roborev	0.056s
+```
+
+Red, only the call at `review.go:208` removed. The goal call at line 134 stayed.
+Both config sources missed `--local cannot use a cursor-cloud host`:
+
+```
+=== RUN   TestLocalReviewRefusesCursorCloudHost/.roborev.toml_host
+    local_review_test.go:177:
+        Error "get agent: no configured agent available (preferred: \"codex\", backups: )..."
+        does not contain "--local cannot use a cursor-cloud host"
+=== RUN   TestLocalReviewRefusesCursorCloudHost/global_config
+    local_review_test.go:177:
+        Error "get agent: no configured agent available (preferred: \"codex\", backups: )..."
+        does not contain "--local cannot use a cursor-cloud host"
+--- FAIL: TestLocalReviewRefusesCursorCloudHost (0.04s)
+    --- FAIL: TestLocalReviewRefusesCursorCloudHost/.roborev.toml_host (0.01s)
+    --- FAIL: TestLocalReviewRefusesCursorCloudHost/global_config (0.01s)
+FAIL
+FAIL	go.kenn.io/roborev/cmd/roborev	0.070s
+```
+
+`--host` and `ROBOREV_DEFAULT_HOST` failed the same way in that run.
