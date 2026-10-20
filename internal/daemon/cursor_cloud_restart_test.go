@@ -1046,6 +1046,18 @@ func cursorCloudShowToken(t *testing.T, tc *workerTestContext, fake *cursorcloud
 	return cursorCloudSeedAgent(t, fake, sha, agent.CursorCloudLaunchMarker(machineID.String(), token)) //nolint:forbidigo // launch marker is prompt text
 }
 
+func deleteCloudJobThenRepo(t *testing.T, db *storage.DB, jobID, repoID int64) {
+	t.Helper()
+	conn, err := db.Conn(t.Context())
+	require.NoError(t, err)
+	defer conn.Close()
+	_, err = conn.ExecContext(t.Context(), `PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(t.Context(), `DELETE FROM review_jobs WHERE id = ?`, jobID)
+	require.NoError(t, err)
+	require.NoError(t, db.DeleteRepo(repoID, true))
+}
+
 func cursorCloudAgeLaunch(t *testing.T, db *storage.DB, jobID int64) {
 	t.Helper()
 	_, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now', '-25 hours') WHERE job_id = ?`, jobID)
@@ -1061,7 +1073,7 @@ func TestOrphanCloudLaunchRecoveryDeletesVM(t *testing.T) {
 		(job_id, launch_token, agent_id, repo_identity, orphan_note, cleaned)
 		VALUES (?, '', '', ?, ?, 0)`, job.ID, cursorCloudRestartRepo, storage.CloudLaunchPendingNote)
 	require.NoError(t, err)
-	require.NoError(t, tc.DB.DeleteRepo(tc.Repo.ID, true))
+	deleteCloudJobThenRepo(t, tc.DB, job.ID, tc.Repo.ID)
 	var jobs, repos int
 	require.NoError(t, tc.DB.QueryRow(`SELECT COUNT(*) FROM review_jobs WHERE id = ?`, job.ID).Scan(&jobs))
 	require.NoError(t, tc.DB.QueryRow(`SELECT COUNT(*) FROM repos WHERE id = ?`, tc.Repo.ID).Scan(&repos))
@@ -1069,8 +1081,7 @@ func TestOrphanCloudLaunchRecoveryDeletesVM(t *testing.T) {
 	assert.Equal(t, 0, repos)
 
 	err = recoverStaleJobs(context.Background(), tc.DB, fake)
-	// assert so an inner-join revert still reports the missed stop, delete, and clean.
-	assert.Error(t, err) //nolint:testifylint // keep going to the VM and row checks
+	require.NoError(t, err)
 	assert.Equal(t, []string{created.ID}, cursorCloudCallIDs(fake, cursorcloudtest.MethodStop))
 	assert.Equal(t, []string{created.ID}, cursorCloudCallIDs(fake, cursorcloudtest.MethodDelete))
 	_, getErr := fake.GetAgent(t.Context(), created.ID)

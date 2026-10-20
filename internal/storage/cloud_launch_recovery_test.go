@@ -43,6 +43,7 @@ func TestListUncleanedCloudLaunchShowsOrphanAfterRepoDelete(t *testing.T) {
 	const token = "repo-deleted-tok"
 	require.NoError(t, db.BeginCloudLaunch(job.ID, "w", token, "https://example.com/acme/old.git"))
 	require.NoError(t, db.AttachCloudAgent(job.ID, token, "bc_leaked"))
+	require.NoError(t, deleteReviewJob(t, db, job.ID))
 	require.NoError(t, db.DeleteRepo(repo.ID, true))
 
 	rows, err := db.ListUncleanedCloudLaunches()
