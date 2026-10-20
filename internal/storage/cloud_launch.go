@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -230,6 +231,64 @@ func ApplyLaunchOrphanWarning(job *ReviewJob, warning string) {
 	}
 }
 
+// quarantineDuplicateCloudLaunchTokens keeps the earliest row for each
+// non-empty token and marks the rest. It does not delete a row. An uncleaned
+// row still owns a VM, so its token and cleaned flag stay as they were and
+// the orphan sweep can list it. Blank tokens are not launch tokens.
+func (db *DB) quarantineDuplicateCloudLaunchTokens() error {
+	rows, err := db.Query(`
+		SELECT id, job_id, launch_token, cleaned
+		FROM review_job_cloud_launches
+		WHERE launch_token != '' AND token_quarantine = 0
+		  AND launch_token IN (
+			SELECT launch_token FROM review_job_cloud_launches
+			WHERE launch_token != '' AND token_quarantine = 0
+			GROUP BY launch_token
+			HAVING COUNT(*) > 1)
+		ORDER BY launch_token, id`)
+	if err != nil {
+		return fmt.Errorf("quarantine duplicate launch tokens: %w", err)
+	}
+	type launchDup struct {
+		id      int64
+		jobID   int64
+		token   string
+		cleaned int
+	}
+	var dups []launchDup
+	for rows.Next() {
+		var row launchDup
+		if err := rows.Scan(&row.id, &row.jobID, &row.token, &row.cleaned); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("quarantine duplicate launch tokens: %w", err)
+		}
+		dups = append(dups, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("quarantine duplicate launch tokens: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("quarantine duplicate launch tokens: %w", err)
+	}
+	var keptID int64
+	var keptToken string
+	for _, row := range dups {
+		if row.token != keptToken {
+			keptToken = row.token
+			keptID = row.id
+			continue
+		}
+		if _, err := db.Exec(`UPDATE review_job_cloud_launches SET token_quarantine = 1
+			WHERE id = ? AND token_quarantine = 0`, row.id); err != nil {
+			return fmt.Errorf("quarantine duplicate launch tokens: %w", err)
+		}
+		log.Printf("cursor-cloud: quarantined duplicate launch token row %d job %d cleaned=%d; kept earliest row %d token %q",
+			row.id, row.jobID, row.cleaned, keptID, row.token)
+	}
+	return nil
+}
+
 // keepCloudLaunchAfterJobDelete drops the job foreign key so deleting a job
 // leaves the launch row, its id, and orphan_note in place. Ids are copied.
 func (db *DB) keepCloudLaunchAfterJobDelete() error {
@@ -264,11 +323,12 @@ func (db *DB) keepCloudLaunchAfterJobDelete() error {
 			cleaned INTEGER NOT NULL DEFAULT 0,
 			repo_identity TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT '',
-			orphan_note TEXT NOT NULL DEFAULT '')`,
+			orphan_note TEXT NOT NULL DEFAULT '',
+			token_quarantine INTEGER NOT NULL DEFAULT 0)`,
 		`INSERT INTO review_job_cloud_launches_keep
-			(id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at, orphan_note)
+			(id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at, orphan_note, token_quarantine)
 			SELECT id, job_id, launch_token, agent_id, cleaned,
-				repo_identity, created_at, orphan_note
+				repo_identity, created_at, orphan_note, token_quarantine
 			FROM review_job_cloud_launches`,
 		`DROP TABLE review_job_cloud_launches`,
 		`ALTER TABLE review_job_cloud_launches_keep RENAME TO review_job_cloud_launches`,

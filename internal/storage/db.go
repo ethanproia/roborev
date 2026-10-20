@@ -1623,6 +1623,7 @@ func (db *DB) ensureCloudLaunchTable() error {
 		`ALTER TABLE review_job_cloud_launches ADD COLUMN repo_identity TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE review_job_cloud_launches ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE review_job_cloud_launches ADD COLUMN orphan_note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE review_job_cloud_launches ADD COLUMN token_quarantine INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("cloud launch column: %w", err)
@@ -1646,11 +1647,19 @@ func (db *DB) ensureCloudLaunchTable() error {
 	if err := db.keepCloudLaunchAfterJobDelete(); err != nil {
 		return err
 	}
+	// Tokens were not unique when these rows were written. Creating the
+	// unique index first bricks Open on a database that already has
+	// duplicates. Quarantine runs first and does not delete a row.
+	if err := db.quarantineDuplicateCloudLaunchTokens(); err != nil {
+		return err
+	}
 	// Blank tokens are the NULL backfill, not launch tokens. More than one
 	// uncleaned blank can exist, and restart leaves those rows uncleaned.
-	// A real token names one launch row.
+	// A real token names one non-quarantined launch row. Quarantined
+	// duplicates keep their token so recovery can still see the VM.
 	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_review_job_cloud_launches_token
-		ON review_job_cloud_launches(launch_token) WHERE launch_token != ''`); err != nil {
+		ON review_job_cloud_launches(launch_token)
+		WHERE launch_token != '' AND token_quarantine = 0`); err != nil {
 		return fmt.Errorf("cloud launch token index: %w", err)
 	}
 	return nil
