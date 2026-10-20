@@ -302,6 +302,88 @@ func (h *firstListThenHide) DeleteAgent(ctx context.Context, id string) error {
 	return h.Client.DeleteAgent(ctx, id)
 }
 
+// TestCloudLaunchExact24hMaxAgeBoundary kills the M4 mutant that changes
+// the 24h comparison from >= to >. At created+24h the empty confirmation
+// cleans, and a token-only miss writes the age-out note. One nanosecond
+// short of that instant does neither. Past-24h tests stay green under M4.
+func TestCloudLaunchExact24hMaxAgeBoundary(t *testing.T) {
+	const layout = "2006-01-02 15:04:05"
+	now := time.Date(2026, 10, 20, 16, 0, 0, 0, time.UTC)
+	exact := now.Add(-24 * time.Hour).Format(layout)
+	young := now.Add(-24 * time.Hour).Add(time.Second).Format(layout)
+
+	t.Run("exact cleans", func(t *testing.T) {
+		n := runBoundarySweep(t, now, exact)
+		assert.Equal(t, 0, n)
+	})
+	t.Run("one second young stays", func(t *testing.T) {
+		n := runBoundarySweep(t, now, young)
+		assert.Equal(t, 1, n)
+	})
+	t.Run("exact age-out note", func(t *testing.T) {
+		text := runBoundaryNote(t, now, exact)
+		assert.Contains(t, text, "was not listed within cloud_launch_clean_delay_hours (24h0m0s)")
+	})
+	t.Run("one second young skips age-out", func(t *testing.T) {
+		text := runBoundaryNote(t, now, young)
+		assert.NotContains(t, text, "was not listed within")
+		assert.Contains(t, text, "orphan risk")
+	})
+}
+
+func runBoundarySweep(t *testing.T, now time.Time, created string) int {
+	t.Helper()
+	restore := agent.SetCursorCloudClockForTest(func() time.Time { return now })
+	t.Cleanup(restore)
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	const token = "launch-token-exact-24h"
+	cursorCloudBeginToken(t, tc, job.ID, token)
+	require.NoError(t, tc.DB.AttachCloudAgent(job.ID, token, "bc_boundary"))
+	fake.MethodErrors = map[string]error{
+		cursorcloudtest.MethodDelete: &cursorcloud.APIError{
+			Op: "delete agent", StatusCode: http.StatusNotFound, Message: "not found",
+		},
+	}
+	_, err := tc.DB.Exec(`UPDATE review_job_cloud_launches SET created_at = ? WHERE job_id = ?`, created, job.ID)
+	require.NoError(t, err)
+
+	// The restart that fails the running job writes the interrupted error
+	// over any note, so the first empty list cannot be the confirmation.
+	require.ErrorContains(t, recoverLaunchSweep(tc.DB, fake, nil), "not listed yet")
+	n, err := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	err = recoverLaunchSweep(tc.DB, fake, nil)
+	n, nerr := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, nerr)
+	if n == 0 {
+		require.NoError(t, err)
+	}
+	return n
+}
+
+func runBoundaryNote(t *testing.T, now time.Time, created string) string {
+	t.Helper()
+	restore := agent.SetCursorCloudClockForTest(func() time.Time { return now })
+	t.Cleanup(restore)
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	cursorCloudBeginToken(t, tc, job.ID, "launch-token-exact-24h-note")
+	_, err := tc.DB.Exec(`UPDATE review_job_cloud_launches SET created_at = ? WHERE job_id = ?`, created, job.ID)
+	require.NoError(t, err)
+
+	_ = recoverLaunchSweep(tc.DB, fake, nil)
+	n, err := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	var text string
+	require.NoError(t, tc.DB.QueryRow(`SELECT COALESCE(error, '') FROM review_jobs WHERE id = ?`, job.ID).Scan(&text))
+	return text
+}
+
 // TestSamePassListsEmptyTwiceDoesNotClean is one restart that lists empty
 // twice. The second list is not a later restart, so the row stays uncleaned.
 // The next restart's empty list cleans it.
