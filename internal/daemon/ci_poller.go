@@ -81,6 +81,8 @@ type ghPR struct {
 	HeadRefOid         string     `json:"headRefOid"`
 	HeadRefName        string     `json:"headRefName"`
 	BaseRefName        string     `json:"baseRefName"`
+	HeadRepo           string     `json:"headRepo,omitempty"`
+	BaseRepo           string     `json:"baseRepo,omitempty"`
 	Title              string     `json:"title"`
 	Author             ghPRAuthor `json:"author"`
 	Labels             []string   `json:"labels"`
@@ -814,6 +816,7 @@ func (p *CIPoller) enqueuePanelRun(ctx context.Context, ghRepo string, pr ghPR, 
 
 	// Resolve panel members + synthesis: a configured [ci].panel names a panel,
 	// else the agents x review_types matrix is adapted into members.
+	ciCloud := ciCursorCloudOptIn(repoCfg)
 	executionRepoCfg, executionRaw, executionCfg := repoCfg, rawRepoCfg, cfg
 	if cfg.CI.Personal.Enabled {
 		// The local personal panel is authority; repository definitions cannot
@@ -822,6 +825,11 @@ func (p *CIPoller) enqueuePanelRun(ctx context.Context, ghRepo string, pr ghPR, 
 		local.CI.Panel = cfg.CI.Personal.Panel
 		executionCfg, executionRepoCfg, executionRaw = &local, nil, nil
 		repoCfg = personalPromptRepoConfig(repoCfg, cfg)
+	}
+	if ciCloud && ciPullRequestFork(pr) {
+		log.Printf("CI poller: refusing cursor-cloud for %s#%d: head repo %q is not base repo %q",
+			ghRepo, pr.Number, pr.HeadRepo, pr.BaseRepo)
+		return false, nil
 	}
 	members, synth, err := p.resolveCIMembers(
 		repo, executionRepoCfg, executionRaw, executionCfg, ghRepo,
@@ -1141,6 +1149,27 @@ func (p *CIPoller) resolveCIMembers(
 	return p.resolveCIMatrixMembers(repo, repoCfg, rawRepoCfg, cfg, ghRepo)
 }
 
+// ciCursorCloudOptIn reports a CI-scoped cursor-cloud choice in the repo
+// config. Global host and ROBOREV_DEFAULT_HOST are not an opt-in.
+func ciCursorCloudOptIn(repoCfg *config.RepoConfig) bool {
+	if repoCfg == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(repoCfg.CI.Host), agent.CursorCloudHost)
+}
+
+// ciPullRequestFork reports a head repository that is not the base repository.
+// Empty names are not treated as a fork so callers that do not know the
+// repositories keep the same-repo path.
+func ciPullRequestFork(pr ghPR) bool {
+	base := strings.ToLower(strings.TrimSpace(pr.BaseRepo))
+	head := strings.ToLower(strings.TrimSpace(pr.HeadRepo))
+	if base == "" || head == "" {
+		return false
+	}
+	return base != head
+}
+
 // ciPanelName returns the configured CI panel name (repo [ci].panel over global
 // [ci].panel), or "" when neither is set (the implicit-matrix fallback).
 func ciPanelName(repoCfg *config.RepoConfig, cfg *config.Config) string {
@@ -1164,25 +1193,18 @@ func (p *CIPoller) resolveCIMatrixMembers(
 	if len(matrix) == 0 {
 		return nil, config.SynthesisSpec{}, nil
 	}
-	repoHost, globalHost := "", ""
-	if repoCfg != nil {
-		repoHost = repoCfg.Host
-	}
-	if cfg != nil {
-		globalHost = cfg.Host
-	}
-	if host, err := agent.ReviewHost("", repoHost, globalHost); err != nil {
-		return nil, config.SynthesisSpec{}, err
-	} else if host == agent.CursorCloudHost {
+	// CI uses cursor-cloud only from this repo's [ci].host. The repo host,
+	// the global host, and ROBOREV_DEFAULT_HOST do not apply here.
+	if ciCursorCloudOptIn(repoCfg) {
 		// The agents x review_types matrix would launch one cloud VM per cell.
 		synth, err := config.ResolveCISynthesis(reasoning, repoCfg, cfg)
 		if err != nil {
 			return nil, config.SynthesisSpec{}, fmt.Errorf("resolve CI synthesis: %w", err)
 		}
 		return []config.ResolvedMember{{
-			Name:      host,
+			Name:      agent.CursorCloudHost,
 			Index:     0,
-			Agent:     host,
+			Agent:     agent.CursorCloudHost,
 			Reasoning: reasoning,
 		}}, synth, nil
 	}
@@ -1357,18 +1379,6 @@ func (p *CIPoller) resolveMatrixMemberAgent(
 	reasoning string,
 ) (string, string, string, string, error) {
 	workflow := config.WorkflowForReviewType(entry.ReviewType)
-	repoHost, globalHost := "", ""
-	if repoCfg != nil {
-		repoHost = repoCfg.Host
-	}
-	if cfg != nil {
-		globalHost = cfg.Host
-	}
-	if host, err := agent.ReviewHost("", repoHost, globalHost); err != nil {
-		return "", "", "", "", err
-	} else if host == agent.CursorCloudHost {
-		return host, "", "", "", nil
-	}
 	resolution, err := agent.ResolveWorkflowConfigFromConfig(entry.Agent, repoCfg, cfg, workflow, reasoning)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("resolve workflow config: %w", err)
@@ -2367,6 +2377,8 @@ func (p *CIPoller) listOpenPRs(ctx context.Context, ghRepo string) ([]ghPR, erro
 			HeadRefOid:         pr.HeadRefOID,
 			HeadRefName:        pr.HeadRefName,
 			BaseRefName:        pr.BaseRefName,
+			HeadRepo:           pr.HeadRepo,
+			BaseRepo:           pr.BaseRepo,
 			Title:              pr.Title,
 			Author:             ghPRAuthor{Login: pr.AuthorLogin},
 			Labels:             pr.Labels,

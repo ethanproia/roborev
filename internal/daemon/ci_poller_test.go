@@ -3201,10 +3201,10 @@ func TestResolveCIMatrixMembersUsesPassedRepoConfigForAgentModel(t *testing.T) {
 func TestCIMatrixCursorCloudLaunchesOneAgent(t *testing.T) {
 	h := newCIPollerHarness(t, "git@github.com:acme/api.git")
 	t.Setenv("CURSOR_API_KEY", "cursor-test-secret")
-	h.Cfg.Host = "cursor-cloud"
+	t.Setenv("ROBOREV_DEFAULT_HOST", "")
 	repoCfg := &config.RepoConfig{
-		Host: "cursor-cloud",
 		CI: config.RepoCIConfig{
+			Host:        "cursor-cloud",
 			Agents:      []string{"codex", "gemini"},
 			ReviewTypes: []string{"security", "default"},
 		},
@@ -3226,7 +3226,8 @@ func TestCIMatrixCursorCloudLaunchesOneAgent(t *testing.T) {
 func TestCICursorCloudMemberLaunchesAtHead(t *testing.T) {
 	h := newCIPollerHarness(t, "git@github.com:acme/api.git")
 	t.Setenv("CURSOR_API_KEY", "cursor-test-secret")
-	h.Cfg.Host = agent.CursorCloudHost
+	t.Setenv("ROBOREV_DEFAULT_HOST", "")
+	require.NoError(t, os.WriteFile(filepath.Join(h.RepoPath, ".roborev.toml"), []byte("[ci]\nhost = \"cursor-cloud\"\n"), 0o644))
 	h.Cfg.CI.Agents = []string{"codex", "gemini"}
 	h.Cfg.CI.ReviewTypes = []string{"security", "default"}
 	h.stubProcessPRGit()
@@ -3282,7 +3283,8 @@ func TestCICursorCloudMissingRangePromptDoesNotQueue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newCIPollerHarness(t, "git@github.com:acme/api.git")
 			t.Setenv("CURSOR_API_KEY", "cursor-test-secret")
-			h.Cfg.Host = agent.CursorCloudHost
+			t.Setenv("ROBOREV_DEFAULT_HOST", "")
+			require.NoError(t, os.WriteFile(filepath.Join(h.RepoPath, ".roborev.toml"), []byte("[ci]\nhost = \"cursor-cloud\"\n"), 0o644))
 			h.Cfg.CI.Agents = []string{"codex"}
 			h.Cfg.CI.ReviewTypes = []string{"default"}
 			h.stubProcessPRGit()
