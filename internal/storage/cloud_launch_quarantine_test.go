@@ -149,3 +149,49 @@ func TestOpenQuarantinesDuplicateLaunchTokens(t *testing.T) {
 	assert.True(saw["repos-dup"])
 	assert.True(saw["same-live"])
 }
+
+// TestQuarantinedLaunchNotCleanedByToken is the token-clean pin. A
+// quarantined row shares its token with a live row. Cleaning by token
+// marks the live row and leaves the quarantined row uncleaned and listed.
+// Dropping the token_quarantine predicate cleans both and fails this test.
+func TestQuarantinedLaunchNotCleanedByToken(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	repo, _, job := createJobChain(t, db, filepath.Join(t.TempDir(), "quarantine"), "qqq111")
+	_, err := db.Exec(`INSERT INTO review_job_cloud_launches
+		(job_id, launch_token, agent_id, cleaned, token_quarantine, orphan_note) VALUES
+		(?, 'q-tok', 'live', 0, 0, 'live-note'),
+		(?, 'q-tok', 'quarantine', 0, 1, 'q-note')`, job.ID, job.ID)
+	require.NoError(t, err)
+
+	require.NoError(t, db.MarkCloudLaunchCleanedByToken(job.ID, repo.ID, "q-tok"))
+
+	cleaned := func(agent string) int {
+		t.Helper()
+		var n int
+		require.NoError(t, db.QueryRow(
+			`SELECT cleaned FROM review_job_cloud_launches WHERE agent_id = ?`, agent,
+		).Scan(&n))
+		return n
+	}
+	assert.Equal(t, 1, cleaned("live"))
+	assert.Equal(t, 0, cleaned("quarantine"))
+
+	rows, err := db.ListUncleanedCloudLaunches()
+	require.NoError(t, err)
+	var found CloudLaunch
+	var n int
+	for _, row := range rows {
+		if row.AgentID != "quarantine" {
+			continue
+		}
+		n++
+		found = row
+	}
+	require.Equal(t, 1, n)
+	assert.Equal(t, "q-tok", found.Token)
+	assert.True(t, found.TokenQuarantine)
+	assert.Equal(t, job.ID, found.JobID)
+	assert.Equal(t, repo.ID, found.RepoID)
+}

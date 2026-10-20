@@ -29,6 +29,9 @@ type CloudLaunch struct {
 	// the create target.
 	RepoIdentity string
 	CreatedAt    string
+	// TokenQuarantine is set on a duplicate token kept for recovery. The
+	// orphan sweep still lists it. Token cleanup must not mark it cleaned.
+	TokenQuarantine bool
 }
 
 func (db *DB) execLaunch(query string, args ...any) error {
@@ -73,7 +76,8 @@ func (db *DB) MarkCloudLaunchCleaned(launchID int64) error {
 }
 
 // MarkCloudLaunchCleanedByToken clears uncleaned rows for this job, repo,
-// and token. The same token on another job or repo stays uncleaned.
+// and token. A quarantined duplicate stays uncleaned. The same token on
+// another job or repo stays uncleaned.
 // After the job row is deleted, recovery still cleans that launch by job id
 // and token, because the job's repo can no longer be read. orphan_note
 // changes only inside MarkCloudLaunchCleaned. Callers mark cleaned only
@@ -85,7 +89,7 @@ func (db *DB) MarkCloudLaunchCleanedByToken(jobID, repoID int64, token string) e
 	rows, err := db.Query(`SELECT l.id
 		FROM review_job_cloud_launches l
 		LEFT JOIN review_jobs j ON j.id = l.job_id
-		WHERE l.cleaned = 0 AND l.job_id = ? AND l.launch_token = ?
+		WHERE l.cleaned = 0 AND l.token_quarantine = 0 AND l.job_id = ? AND l.launch_token = ?
 		  AND (j.repo_id = ? OR j.id IS NULL)
 		ORDER BY l.id`, jobID, token, repoID)
 	if err != nil {
@@ -114,7 +118,7 @@ func (db *DB) MarkCloudLaunchCleanedByToken(jobID, repoID int64, token string) e
 
 func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	rows, err := db.Query(`SELECT l.id, l.job_id, COALESCE(j.repo_id, 0), l.launch_token, COALESCE(l.agent_id, ''), COALESCE(r.root_path, ''),
-		COALESCE(l.repo_identity, ''), COALESCE(l.created_at, '')
+		COALESCE(l.repo_identity, ''), COALESCE(l.created_at, ''), l.token_quarantine
 		FROM review_job_cloud_launches l
 		LEFT JOIN review_jobs j ON j.id = l.job_id
 		LEFT JOIN repos r ON r.id = j.repo_id
@@ -127,9 +131,11 @@ func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	for rows.Next() {
 		var row CloudLaunch
 		var token sql.NullString
-		if err := rows.Scan(&row.ID, &row.JobID, &row.RepoID, &token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt); err != nil {
+		var quarantine int
+		if err := rows.Scan(&row.ID, &row.JobID, &row.RepoID, &token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt, &quarantine); err != nil {
 			return nil, err
 		}
+		row.TokenQuarantine = quarantine != 0
 		row.TokenNull = !token.Valid
 		if token.Valid {
 			row.Token = token.String

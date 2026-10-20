@@ -68,6 +68,11 @@ func recoverCloudLaunches(ctx context.Context, db *storage.DB, client cursorclou
 const cloudLaunchMaxAge = 24 * time.Hour
 
 func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorcloud.Client, daemonID string, row storage.CloudLaunch) error {
+	// A quarantined duplicate still names a VM. Cleaning it by token hides
+	// that VM from the next sweep. Report it and leave the row uncleaned.
+	if row.TokenQuarantine {
+		return reportCloudLaunchOrphan(db, row)
+	}
 	if row.AgentID != "" {
 		log.Printf("cursor-cloud: stop interrupted agent %s for job %d", row.AgentID, row.JobID)
 		if err := agent.StopAndDeleteCursorCloudAgent(client, row.AgentID); err != nil {
