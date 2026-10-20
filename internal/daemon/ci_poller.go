@@ -1861,6 +1861,18 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 	return memberOpts, synthOpts, nil
 }
 
+// cursorCloudCIRef is the commit a CI cursor-cloud member launches at.
+// enqueuePanelRun freezes every pull request as merge-base..head, and
+// cursor-cloud rejects a range. The head commit is the pull request tip.
+// The prompt is still built from the full range.
+func cursorCloudCIRef(gitRef string) (string, error) {
+	head := strings.TrimSpace(headOf(gitRef))
+	if head == "" || head == "dirty" || strings.Contains(head, "..") {
+		return "", fmt.Errorf("cursor-cloud reviews one commit; CI ref %q has no head commit", gitRef)
+	}
+	return head, nil
+}
+
 func listCommitsInRange(repoPath, base, head string) ([]string, error) {
 	cmd := exec.Command("git", "rev-list", "--reverse", base+".."+head)
 	procutil.HideConsole(cmd)
