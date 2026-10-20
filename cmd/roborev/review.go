@@ -394,6 +394,7 @@ Examples:
 				GitRef:      gitRef,
 				Branch:      branchName,
 				Agent:       agent,
+				Host:        host,
 				Model:       model,
 				Provider:    provider,
 				Reasoning:   reasoning,
