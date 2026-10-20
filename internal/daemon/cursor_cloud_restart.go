@@ -117,7 +117,7 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	// must finish with no listed agent left for this token. found means
 	// every listed match was deleted; an error above means one remains.
 	if row.AgentID == "" && !found {
-		if cloudLaunchAgedOut(row.CreatedAt, time.Now().UTC()) {
+		if cloudLaunchCreatedAtReportsOrphan(row, time.Now().UTC()) {
 			return reportCloudLaunchOrphan(db, row)
 		}
 		return fmt.Errorf("cursor-cloud: launch %d not listed yet", row.ID)
@@ -125,10 +125,19 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	return db.MarkCloudLaunchCleanedByToken(row.Token)
 }
 
+func cloudLaunchCreatedAtReportsOrphan(row storage.CloudLaunch, now time.Time) bool {
+	if row.CreatedAtNull {
+		return true
+	}
+	return cloudLaunchAgedOut(row.CreatedAt, now)
+}
+
 func cloudLaunchAgedOut(createdAt string, now time.Time) bool {
 	created, ok := storage.ParseCloudLaunchCreatedAt(createdAt)
 	if !ok {
-		return false
+		// Non-empty garbage is an orphan. Exact '' is still a young miss;
+		// Open rewrites that one value to datetime('now').
+		return createdAt != ""
 	}
 	return !created.Add(cloudLaunchMaxAge).After(now)
 }

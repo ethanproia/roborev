@@ -1064,6 +1064,73 @@ func cursorCloudAgeLaunch(t *testing.T, db *storage.DB, jobID int64) {
 	require.NoError(t, err)
 }
 
+func TestMalformedCreatedAtIsReportedAsOrphan(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		null bool
+	}{
+		{name: "null", null: true},
+		{name: "whitespace", raw: " \t "},
+		{name: "garbage", raw: "not-a-date"},
+		{name: "date-only", raw: "1999-06-15"},
+		{name: "epoch", raw: "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbTC, fake := cursorCloudRestartFixture(t)
+			sha := testutil.GetHeadSHA(t, dbTC.TmpDir)
+			job := dbTC.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+			token := "malformed-" + tc.name
+			require.NoError(t, dbTC.DB.BeginCloudLaunch(job.ID, testWorkerID, token, cursorCloudRestartRepo))
+			if tc.null {
+				require.NoError(t, makeLaunchCreatedAtNullable(t, dbTC.DB))
+				_, err := dbTC.DB.Exec(`UPDATE review_job_cloud_launches SET created_at = NULL WHERE launch_token = ?`, token)
+				require.NoError(t, err)
+			} else {
+				_, err := dbTC.DB.Exec(`UPDATE review_job_cloud_launches SET created_at = ? WHERE launch_token = ?`, tc.raw, token)
+				require.NoError(t, err)
+			}
+			logs := cursorCloudCaptureLog(t)
+			err := recoverCloudLaunches(context.Background(), dbTC.DB, fake)
+			require.NoError(t, err)
+			assert.Contains(t, logs.String(), "was not listed within")
+			assert.NotContains(t, logs.String(), "not listed yet")
+			var cleaned int
+			require.NoError(t, dbTC.DB.QueryRow(`SELECT cleaned FROM review_job_cloud_launches WHERE launch_token = ?`, token).Scan(&cleaned))
+			assert.Equal(t, 0, cleaned)
+		})
+	}
+}
+
+func makeLaunchCreatedAtNullable(t *testing.T, db *storage.DB) error {
+	t.Helper()
+	_, err := db.Exec(`CREATE TABLE review_job_cloud_launches_nullable (
+		id INTEGER PRIMARY KEY,
+		job_id INTEGER,
+		launch_token TEXT,
+		agent_id TEXT NOT NULL DEFAULT '',
+		cleaned INTEGER NOT NULL DEFAULT 0,
+		repo_identity TEXT NOT NULL DEFAULT '',
+		created_at TEXT,
+		orphan_note TEXT NOT NULL DEFAULT '')`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`INSERT INTO review_job_cloud_launches_nullable
+		(id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at, orphan_note)
+		SELECT id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at, orphan_note
+		FROM review_job_cloud_launches`)
+	if err != nil {
+		return err
+	}
+	if _, err = db.Exec(`DROP TABLE review_job_cloud_launches`); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE review_job_cloud_launches_nullable RENAME TO review_job_cloud_launches`)
+	return err
+}
+
 func TestOrphanCloudLaunchRecoveryDeletesVM(t *testing.T) {
 	tc, fake := cursorCloudRestartFixture(t)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)

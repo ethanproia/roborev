@@ -15,15 +15,16 @@ func TestCloudLaunchCreatedAtBackfillShapes(t *testing.T) {
 		name      string
 		raw       string
 		canonical string
+		keepRaw   bool
 	}{
 		{name: "empty", raw: ""},
-		{name: "whitespace", raw: " \t "},
-		{name: "garbage", raw: "not-a-date"},
+		{name: "whitespace", raw: " \t ", keepRaw: true},
+		{name: "garbage", raw: "not-a-date", keepRaw: true},
 		{name: "rfc3339-offset", raw: "1999-06-15T12:00:00-05:00", canonical: "1999-06-15 17:00:00"},
-		{name: "unix-seconds", raw: "946684800"},
-		{name: "date-only", raw: "1999-06-15"},
-		{name: "sqlite-t-without-zone", raw: "1999-06-15T12:00:00"},
-		{name: "sqlite-space-with-z", raw: "1999-06-15 12:00:00Z"},
+		{name: "unix-seconds", raw: "946684800", keepRaw: true},
+		{name: "date-only", raw: "1999-06-15", keepRaw: true},
+		{name: "sqlite-t-without-zone", raw: "1999-06-15T12:00:00", keepRaw: true},
+		{name: "sqlite-space-with-z", raw: "1999-06-15 12:00:00Z", keepRaw: true},
 		{name: "sqlite-datetime", raw: "1999-06-15 17:00:00", canonical: "1999-06-15 17:00:00"},
 	}
 	for _, tc := range cases {
@@ -51,6 +52,12 @@ func TestCloudLaunchCreatedAtBackfillShapes(t *testing.T) {
 
 			var got string
 			require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = ?`, "shape-"+tc.name).Scan(&got))
+			if tc.keepRaw {
+				assert.Equal(t, tc.raw, got)
+				_, ok := ParseCloudLaunchCreatedAt(got)
+				assert.False(t, ok)
+				return
+			}
 			parsed, ok := ParseCloudLaunchCreatedAt(got)
 			require.True(t, ok, "created_at %q does not parse", got)
 			assert.Regexp(t, sqliteCreatedAtPattern, got)
@@ -67,3 +74,32 @@ func TestCloudLaunchCreatedAtBackfillShapes(t *testing.T) {
 }
 
 var sqliteCreatedAtPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$`)
+
+func TestCloudLaunchRebuildAcceptsNullCreatedAt(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	_, _, job := createJobChain(t, db, "/tmp/launch-null-created", "abc123")
+	_, err := db.Exec(`DROP TABLE review_job_cloud_launches`)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE review_job_cloud_launches (
+		id INTEGER PRIMARY KEY,
+		job_id INTEGER NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
+		launch_token TEXT NOT NULL,
+		agent_id TEXT NOT NULL DEFAULT '',
+		cleaned INTEGER NOT NULL DEFAULT 0,
+		repo_identity TEXT NOT NULL DEFAULT '',
+		created_at TEXT,
+		orphan_note TEXT NOT NULL DEFAULT '')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO review_job_cloud_launches (job_id, launch_token, created_at) VALUES (?, 'null-created', NULL)`, job.ID)
+	require.NoError(t, err)
+
+	require.NoError(t, db.ensureCloudLaunchTable())
+
+	var got string
+	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = 'null-created'`).Scan(&got))
+	assert.Equal(t, " ", got)
+	_, ok := ParseCloudLaunchCreatedAt(got)
+	assert.False(t, ok)
+}

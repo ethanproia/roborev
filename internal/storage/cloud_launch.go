@@ -25,8 +25,9 @@ type CloudLaunch struct {
 	// RepoIdentity is the repository URL sent when this launch was created.
 	// Recovery lists against it. A later change to the checkout remote is not
 	// the create target.
-	RepoIdentity string
-	CreatedAt    string
+	RepoIdentity  string
+	CreatedAt     string
+	CreatedAtNull bool
 	// OrphanNote is the failed-cleanup warning. It stays readable after the
 	// job or repo row is gone; the sweep list is what still returns it.
 	OrphanNote string
@@ -108,7 +109,7 @@ func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	// Left joins keep a launch whose job or repo was deleted. An inner join
 	// would hide that row, so restart would never stop its VM.
 	rows, err := db.Query(`SELECT l.id, l.job_id, l.launch_token, COALESCE(l.agent_id, ''), COALESCE(r.root_path, ''),
-		COALESCE(l.repo_identity, ''), COALESCE(l.created_at, ''), COALESCE(l.orphan_note, '')
+		COALESCE(l.repo_identity, ''), l.created_at, COALESCE(l.orphan_note, '')
 		FROM review_job_cloud_launches l
 		LEFT JOIN review_jobs j ON j.id = l.job_id
 		LEFT JOIN repos r ON r.id = j.repo_id
@@ -120,13 +121,17 @@ func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	var out []CloudLaunch
 	for rows.Next() {
 		var row CloudLaunch
-		var token sql.NullString
-		if err := rows.Scan(&row.ID, &row.JobID, &token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt, &row.OrphanNote); err != nil {
+		var token, created sql.NullString
+		if err := rows.Scan(&row.ID, &row.JobID, &token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &created, &row.OrphanNote); err != nil {
 			return nil, err
 		}
 		row.TokenNull = !token.Valid
 		if token.Valid {
 			row.Token = token.String
+		}
+		row.CreatedAtNull = !created.Valid
+		if created.Valid {
+			row.CreatedAt = created.String
 		}
 		out = append(out, row)
 	}
@@ -289,7 +294,7 @@ func (db *DB) keepCloudLaunchAfterJobDelete() error {
 		`INSERT INTO review_job_cloud_launches_keep
 			(id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at, orphan_note)
 			SELECT id, job_id, launch_token, agent_id, cleaned,
-				repo_identity, created_at, orphan_note
+				repo_identity, CASE WHEN created_at IS NULL THEN ' ' ELSE created_at END, orphan_note
 			FROM review_job_cloud_launches`,
 		`DROP TABLE review_job_cloud_launches`,
 		`ALTER TABLE review_job_cloud_launches_keep RENAME TO review_job_cloud_launches`,
@@ -315,11 +320,18 @@ func ParseCloudLaunchCreatedAt(s string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// backfillCloudLaunchCreatedAt rewrites created_at so every row parses in
-// ParseCloudLaunchCreatedAt and ages from that instant. A value that already
-// parses is stored as UTC sqlite seconds of the same instant. Anything else
-// becomes datetime('now'): blank, whitespace, garbage, unix seconds, and date-only.
+// backfillCloudLaunchCreatedAt normalizes created_at before the NOT NULL
+// rebuild. The column was added as TEXT NOT NULL DEFAULT ” (SQLite fills
+// existing rows with that default and rejects a later NULL write), so a
+// migrated table cannot store NULL. A nullable legacy value is stored as one
+// space, which does not parse, and the sweep reports that row as an orphan.
+// Exact ” becomes datetime('now') and then ages. A non-empty value that
+// ParseCloudLaunchCreatedAt rejects (whitespace, garbage, a date, an epoch)
+// is left unchanged so it is reported instead of rewritten to now.
 func (db *DB) backfillCloudLaunchCreatedAt() error {
+	if _, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = ' ' WHERE created_at IS NULL`); err != nil {
+		return fmt.Errorf("cloud launch created_at: %w", err)
+	}
 	rows, err := db.Query(`SELECT id, COALESCE(created_at, '') FROM review_job_cloud_launches`)
 	if err != nil {
 		return fmt.Errorf("cloud launch created_at: %w", err)
@@ -345,7 +357,9 @@ func (db *DB) backfillCloudLaunchCreatedAt() error {
 			fixes = append(fixes, createdAtFix{id: id, value: canonical})
 			continue
 		}
-		fixes = append(fixes, createdAtFix{id: id, useNow: true})
+		if created == "" {
+			fixes = append(fixes, createdAtFix{id: id, useNow: true})
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("cloud launch created_at: %w", err)
