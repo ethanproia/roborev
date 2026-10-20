@@ -266,6 +266,14 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 	// stripped of userinfo. The marker lets a create that fails after send
 	// be found by listing agents and reading the conversation.
 	token := newLaunchToken()
+	// The restart sweep lists only a URL RemoteIdentity accepts. Binding a
+	// rejected URL stores a token-only row that cannot be swept. Refuse
+	// before BindLaunch writes the row and before the create POST. The
+	// launch was not sent, so the hour is refunded.
+	if !CursorCloudRepoUsable(repoURL) {
+		refund()
+		return "", fmt.Errorf("cursor-cloud: refusing to bind launch because %q is not a repository URL", repoURL)
+	}
 	if a.BindLaunch != nil {
 		if bindErr := a.BindLaunch(token, repoURL); bindErr != nil {
 			refund()
