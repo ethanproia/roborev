@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -117,7 +118,11 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	// must finish with no listed agent left for this token. found means
 	// every listed match was deleted; an error above means one remains.
 	if row.AgentID == "" && !found {
-		if cloudLaunchCreatedAtReportsOrphan(row, time.Now().UTC()) {
+		report, err := cloudLaunchCreatedAtReportsOrphan(db, row, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if report {
 			return reportCloudLaunchOrphan(db, row)
 		}
 		return fmt.Errorf("cursor-cloud: launch %d not listed yet", row.ID)
@@ -125,18 +130,25 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	return db.MarkCloudLaunchCleanedByToken(row.Token)
 }
 
-func cloudLaunchCreatedAtReportsOrphan(row storage.CloudLaunch, now time.Time) bool {
+func cloudLaunchCreatedAtReportsOrphan(db *storage.DB, row storage.CloudLaunch, now time.Time) (bool, error) {
 	if row.CreatedAtNull {
-		return true
+		return true, nil
 	}
-	return cloudLaunchAgedOut(row.CreatedAt, now)
+	var normalized sql.NullString
+	if err := db.QueryRow(`SELECT datetime(?)`, row.CreatedAt).Scan(&normalized); err != nil {
+		return false, err
+	}
+	// datetime() rejected it, or it would store a different text. Either way
+	// the Go clock and SQLite do not agree, so this is an orphan, not a miss.
+	if !normalized.Valid || row.CreatedAt != normalized.String {
+		return true, nil
+	}
+	return cloudLaunchAgedOut(normalized.String, now), nil
 }
 
 func cloudLaunchAgedOut(createdAt string, now time.Time) bool {
 	created, ok := storage.ParseCloudLaunchCreatedAt(createdAt)
 	if !ok {
-		// Non-empty garbage is an orphan. Exact '' is still a young miss;
-		// Open rewrites that one value to datetime('now').
 		return createdAt != ""
 	}
 	return !created.Add(cloudLaunchMaxAge).After(now)

@@ -324,42 +324,34 @@ func ParseCloudLaunchCreatedAt(s string) (time.Time, bool) {
 // rebuild. The column was added as TEXT NOT NULL DEFAULT ” (SQLite fills
 // existing rows with that default and rejects a later NULL write), so a
 // migrated table cannot store NULL. A nullable legacy value is stored as one
-// space, which does not parse, and the sweep reports that row as an orphan.
-// Exact ” becomes datetime('now') and then ages. A non-empty value that
-// ParseCloudLaunchCreatedAt rejects (whitespace, garbage, a date, an epoch)
-// is left unchanged so it is reported instead of rewritten to now.
+// space so the copy succeeds; a space does not parse and the sweep reports it.
+// When datetime(created_at) returns an instant, that instant is stored. This
+// does not use datetime('now'), so a date-only or offset value keeps its age.
+// A value datetime() rejects is left as written and reported as an orphan.
 func (db *DB) backfillCloudLaunchCreatedAt() error {
 	if _, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = ' ' WHERE created_at IS NULL`); err != nil {
 		return fmt.Errorf("cloud launch created_at: %w", err)
 	}
-	rows, err := db.Query(`SELECT id, COALESCE(created_at, '') FROM review_job_cloud_launches`)
+	rows, err := db.Query(`SELECT id, created_at, datetime(created_at) FROM review_job_cloud_launches`)
 	if err != nil {
 		return fmt.Errorf("cloud launch created_at: %w", err)
 	}
 	defer rows.Close()
 	type createdAtFix struct {
-		id     int64
-		value  string
-		useNow bool
+		id    int64
+		value string
 	}
 	var fixes []createdAtFix
 	for rows.Next() {
 		var id int64
-		var created string
-		if err := rows.Scan(&id, &created); err != nil {
+		var created, normalized sql.NullString
+		if err := rows.Scan(&id, &created, &normalized); err != nil {
 			return fmt.Errorf("cloud launch created_at: %w", err)
 		}
-		if parsed, ok := ParseCloudLaunchCreatedAt(created); ok {
-			canonical := parsed.UTC().Format(sqliteTimestampLayout)
-			if created == canonical {
-				continue
-			}
-			fixes = append(fixes, createdAtFix{id: id, value: canonical})
+		if !created.Valid || !normalized.Valid || created.String == normalized.String {
 			continue
 		}
-		if created == "" {
-			fixes = append(fixes, createdAtFix{id: id, useNow: true})
-		}
+		fixes = append(fixes, createdAtFix{id: id, value: normalized.String})
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("cloud launch created_at: %w", err)
@@ -368,13 +360,7 @@ func (db *DB) backfillCloudLaunchCreatedAt() error {
 		return fmt.Errorf("cloud launch created_at: %w", err)
 	}
 	for _, fix := range fixes {
-		var err error
-		if fix.useNow {
-			_, err = db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now') WHERE id = ?`, fix.id)
-		} else {
-			_, err = db.Exec(`UPDATE review_job_cloud_launches SET created_at = ? WHERE id = ?`, fix.value, fix.id)
-		}
-		if err != nil {
+		if _, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = ? WHERE id = ?`, fix.value, fix.id); err != nil {
 			return fmt.Errorf("cloud launch created_at: %w", err)
 		}
 	}

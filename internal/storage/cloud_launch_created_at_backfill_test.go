@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"regexp"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -9,22 +9,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Shapes where SQLite datetime() and ParseCloudLaunchCreatedAt disagree, plus
+// the values neither accepts. canonical is datetime()'s text when it returns
+// one; otherwise the raw value must be left unchanged (never datetime('now')).
 func TestCloudLaunchCreatedAtBackfillShapes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name      string
 		raw       string
+		null      bool
 		canonical string
 		keepRaw   bool
 	}{
-		{name: "empty", raw: ""},
+		{name: "null", null: true, canonical: " "},
+		{name: "empty", raw: "", keepRaw: true},
 		{name: "whitespace", raw: " \t ", keepRaw: true},
+		{name: "leading-space", raw: " 1999-06-15 12:00:00", keepRaw: true},
+		{name: "trailing-space", raw: "1999-06-15 12:00:00 ", canonical: "1999-06-15 12:00:00"},
 		{name: "garbage", raw: "not-a-date", keepRaw: true},
-		{name: "rfc3339-offset", raw: "1999-06-15T12:00:00-05:00", canonical: "1999-06-15 17:00:00"},
+		{name: "epoch", raw: "0", canonical: "-4713-11-24 12:00:00"},
 		{name: "unix-seconds", raw: "946684800", keepRaw: true},
-		{name: "date-only", raw: "1999-06-15", keepRaw: true},
-		{name: "sqlite-t-without-zone", raw: "1999-06-15T12:00:00", keepRaw: true},
-		{name: "sqlite-space-with-z", raw: "1999-06-15 12:00:00Z", keepRaw: true},
+		{name: "date-only", raw: "1999-06-15", canonical: "1999-06-15 00:00:00"},
+		{name: "minute-precision", raw: "1999-06-15 12:00", canonical: "1999-06-15 12:00:00"},
+		{name: "t-without-zone", raw: "1999-06-15T12:00:00", canonical: "1999-06-15 12:00:00"},
+		{name: "fractional-seconds", raw: "1999-06-15 12:00:00.500", canonical: "1999-06-15 12:00:00"},
+		{name: "zulu", raw: "1999-06-15T12:00:00Z", canonical: "1999-06-15 12:00:00"},
+		{name: "utc-offset", raw: "1999-06-15T12:00:00+00:00", canonical: "1999-06-15 12:00:00"},
+		{name: "non-utc-offset", raw: "1999-06-15T12:00:00-05:00", canonical: "1999-06-15 17:00:00"},
+		{name: "space-with-z", raw: "1999-06-15 12:00:00Z", canonical: "1999-06-15 12:00:00"},
 		{name: "sqlite-datetime", raw: "1999-06-15 17:00:00", canonical: "1999-06-15 17:00:00"},
 	}
 	for _, tc := range cases {
@@ -41,65 +53,35 @@ func TestCloudLaunchCreatedAtBackfillShapes(t *testing.T) {
 				agent_id TEXT NOT NULL DEFAULT '',
 				cleaned INTEGER NOT NULL DEFAULT 0,
 				repo_identity TEXT NOT NULL DEFAULT '',
-				created_at TEXT NOT NULL DEFAULT '',
+				created_at TEXT,
 				orphan_note TEXT NOT NULL DEFAULT '')`)
 			require.NoError(t, err)
 			_, err = db.Exec(`INSERT INTO review_job_cloud_launches (job_id, launch_token, created_at)
-				VALUES (1, ?, ?)`, "shape-"+tc.name, tc.raw)
+				VALUES (1, ?, ?)`, "shape-"+tc.name, nullableCreatedAt(tc.null, tc.raw))
 			require.NoError(t, err)
 
 			require.NoError(t, db.ensureCloudLaunchTable())
 
-			var got string
+			var got sql.NullString
 			require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = ?`, "shape-"+tc.name).Scan(&got))
+			require.True(t, got.Valid)
 			if tc.keepRaw {
-				assert.Equal(t, tc.raw, got)
-				_, ok := ParseCloudLaunchCreatedAt(got)
+				assert.Equal(t, tc.raw, got.String)
+				_, ok := ParseCloudLaunchCreatedAt(got.String)
 				assert.False(t, ok)
 				return
 			}
-			parsed, ok := ParseCloudLaunchCreatedAt(got)
-			require.True(t, ok, "created_at %q does not parse", got)
-			assert.Regexp(t, sqliteCreatedAtPattern, got)
-			aged := !parsed.Add(24 * time.Hour).After(time.Now().UTC())
-			if tc.canonical != "" {
-				assert.Equal(t, tc.canonical, got)
-				assert.True(t, aged)
-				return
-			}
-			assert.NotEqual(t, tc.raw, got)
-			assert.False(t, aged)
+			assert.Equal(t, tc.canonical, got.String)
+			parsed, ok := ParseCloudLaunchCreatedAt(got.String)
+			require.True(t, ok, "created_at %q does not parse", got.String)
+			assert.True(t, !parsed.Add(24*time.Hour).After(time.Now().UTC()), "age clock was reset to %s", got.String)
 		})
 	}
 }
 
-var sqliteCreatedAtPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$`)
-
-func TestCloudLaunchRebuildAcceptsNullCreatedAt(t *testing.T) {
-	t.Parallel()
-	db := openTestDB(t)
-	t.Cleanup(func() { db.Close() })
-	_, _, job := createJobChain(t, db, "/tmp/launch-null-created", "abc123")
-	_, err := db.Exec(`DROP TABLE review_job_cloud_launches`)
-	require.NoError(t, err)
-	_, err = db.Exec(`CREATE TABLE review_job_cloud_launches (
-		id INTEGER PRIMARY KEY,
-		job_id INTEGER NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
-		launch_token TEXT NOT NULL,
-		agent_id TEXT NOT NULL DEFAULT '',
-		cleaned INTEGER NOT NULL DEFAULT 0,
-		repo_identity TEXT NOT NULL DEFAULT '',
-		created_at TEXT,
-		orphan_note TEXT NOT NULL DEFAULT '')`)
-	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO review_job_cloud_launches (job_id, launch_token, created_at) VALUES (?, 'null-created', NULL)`, job.ID)
-	require.NoError(t, err)
-
-	require.NoError(t, db.ensureCloudLaunchTable())
-
-	var got string
-	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = 'null-created'`).Scan(&got))
-	assert.Equal(t, " ", got)
-	_, ok := ParseCloudLaunchCreatedAt(got)
-	assert.False(t, ok)
+func nullableCreatedAt(isNull bool, raw string) any {
+	if isNull {
+		return nil
+	}
+	return raw
 }
