@@ -27,6 +27,27 @@ func TestGetJobByIDShowsLaunchOrphanWarning(t *testing.T) {
 	assert.Empty(t, other.OrphanWarning)
 }
 
+func TestGetReviewByJobIDShowsLaunchOrphanWarning(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	_, _, job := createJobChain(t, db, "/tmp/reader-review", "abc123")
+	_, err := db.Exec(`INSERT INTO reviews (job_id, agent, prompt, output, structured_output)
+		VALUES (?, 'cursor-cloud', 'prompt', '', ?)`, job.ID,
+		`{"schema_version":2,"summary":"review body","verdict":"pass","findings":[]}`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO review_job_cloud_launches
+		(job_id, launch_token, orphan_note) VALUES (?, 'review-tok', ?)`, job.ID, CloudLaunchPendingNote)
+	require.NoError(t, err)
+
+	got, err := db.GetReviewByJobID(job.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.Job)
+	assert.Contains(t, got.Job.OrphanWarning, "orphan risk")
+	assert.Contains(t, got.Job.Error, "orphan risk")
+	assert.Contains(t, got.Output, "review body")
+}
+
 func TestGetJobsWithReviewsByIDsShowsLaunchOrphanWarning(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
