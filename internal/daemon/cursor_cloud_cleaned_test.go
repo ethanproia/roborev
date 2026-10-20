@@ -222,6 +222,85 @@ func (c *finishDuringCreate) CreateAgent(ctx context.Context, req cursorcloud.Cr
 	return ag, ctx.Err()
 }
 
+// TestCursorCloudList429RetryMarksCleanedWithoutRestart is the follow-up
+// after a list 429 breaks reconcile. The next list in this process deletes
+// the VM and marks the launch cleaned. No startup sweep runs. Removing the
+// follow-up leaves the row uncleaned.
+func TestCursorCloudList429RetryMarksCleanedWithoutRestart(t *testing.T) {
+	tc, _ := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	fake := &cursorcloudtest.Fake{}
+	script := &listRetryCloud{
+		Fake: fake,
+		limit: &cursorcloud.APIError{
+			Op: "list agents", StatusCode: http.StatusTooManyRequests, Message: "slow down",
+			RetryAfter: time.Millisecond,
+		},
+	}
+	_, err := newBoundCloud(t, tc, job, script).Review(context.Background(), tc.TmpDir, sha, "prompt", nil)
+	require.Error(t, err)
+	assert.Equal(t, 2, script.lists)
+	deleted := cursorCloudCallIDs(fake, cursorcloudtest.MethodDelete)
+	require.NotEmpty(t, deleted)
+	assertLaunchCleaned(t, tc, job.ID, fake, deleted[0])
+}
+
+// TestCursorCloudList429RetryStopsOnCancel cancels the caller before the
+// follow-up wait. The second list must not run and the launch stays
+// uncleaned. Ignoring the cancel marks it cleaned and this test fails.
+func TestCursorCloudList429RetryStopsOnCancel(t *testing.T) {
+	tc, _ := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &cursorcloudtest.Fake{}
+	script := &listRetryCloud{
+		Fake:   fake,
+		cancel: cancel,
+		limit: &cursorcloud.APIError{
+			Op: "list agents", StatusCode: http.StatusTooManyRequests, Message: "slow down",
+			RetryAfter: time.Hour,
+		},
+	}
+	_, err := newBoundCloud(t, tc, job, script).Review(ctx, tc.TmpDir, sha, "prompt", nil)
+	require.Error(t, err)
+	assert.Equal(t, 1, script.lists)
+	n, nerr := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, nerr)
+	assert.Equal(t, 1, n)
+	_, err = fake.GetAgent(t.Context(), "bc_fake_1")
+	require.NoError(t, err)
+}
+
+// listRetryCloud stores the agent, then fails the create so reconcile lists.
+// The first list is a 429. Later lists use the fake, which still has the VM.
+type listRetryCloud struct {
+	*cursorcloudtest.Fake
+	limit  error
+	cancel context.CancelFunc
+	lists  int
+}
+
+func (c *listRetryCloud) CreateAgent(ctx context.Context, req cursorcloud.CreateAgentRequest) (cursorcloud.Agent, error) {
+	ag, err := c.Fake.CreateAgent(context.Background(), req)
+	if err != nil {
+		return ag, err
+	}
+	return ag, errors.New("response lost")
+}
+
+func (c *listRetryCloud) ListAgents(ctx context.Context) ([]cursorcloud.Agent, error) {
+	c.lists++
+	if c.lists == 1 {
+		if c.cancel != nil {
+			c.cancel()
+		}
+		return nil, c.limit
+	}
+	return c.Fake.ListAgents(ctx)
+}
+
 // TestCursorCloudSuccessDeleteMarksCleaned is the in-process success path.
 // Nil and 404 both confirm the delete, so the launch is cleaned before the
 // process can crash between delete and the next start.

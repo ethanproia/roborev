@@ -232,6 +232,9 @@ type APIError struct {
 	StatusCode int
 	Code       string
 	Message    string
+	// RetryAfter is the Retry-After delay, when the response carried one.
+	// Zero means the header was absent, not a delay of zero.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -484,7 +487,7 @@ func (c *httpClient) do(ctx context.Context, op, method, path string, in, out an
 		return c.redactErr(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return c.apiError(op, resp.StatusCode, data)
+		return c.apiError(op, resp.StatusCode, data, resp.Header.Get("Retry-After"))
 	}
 	if out == nil {
 		return nil
@@ -559,7 +562,7 @@ func (c *httpClient) authorization() string {
 	return "Basic " + token
 }
 
-func (c *httpClient) apiError(op string, status int, data []byte) error {
+func (c *httpClient) apiError(op string, status int, data []byte, retryAfter string) error {
 	code, message, ok := parseAPIErrorBody(data)
 	if !ok {
 		message = string(data)
@@ -576,7 +579,28 @@ func (c *httpClient) apiError(op string, status int, data []byte) error {
 		StatusCode: status,
 		Code:       code,
 		Message:    strings.TrimSpace(message),
+		RetryAfter: parseRetryAfter(retryAfter, time.Now()),
 	}
+}
+
+// parseRetryAfter reads a Retry-After value (RFC 9110: delay-seconds or
+// HTTP-date). An absent, unparseable, or already elapsed value is zero.
+func parseRetryAfter(raw string, now time.Time) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(raw); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	when, err := http.ParseTime(raw)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	return when.Sub(now)
 }
 
 func parseAPIErrorBody(data []byte) (code, message string, ok bool) {

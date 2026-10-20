@@ -2127,6 +2127,13 @@ func TestReconcileConversationRateLimitStops(t *testing.T) {
 	})
 }
 
+func TestCursorCloudListRetryWaitHonorsRetryAfter(t *testing.T) {
+	limited := &cursorcloud.APIError{StatusCode: http.StatusTooManyRequests, RetryAfter: 3 * time.Second}
+	assert.Equal(t, 3*time.Second, cursorCloudListRetryWait(limited))
+	assert.Equal(t, 3*time.Second, cursorCloudListRetryWait(fmt.Errorf("list: %w", limited)))
+	assert.Equal(t, cursorCloudReconcileBackoff, cursorCloudListRetryWait(&cursorcloud.APIError{StatusCode: http.StatusTooManyRequests}))
+}
+
 func TestReconcileStopsOnRateLimitAndCancel(t *testing.T) {
 	prev := cursorCloudReconcileWindow
 	cursorCloudReconcileWindow = time.Minute
@@ -2134,7 +2141,7 @@ func TestReconcileStopsOnRateLimitAndCancel(t *testing.T) {
 	limited := &rateLimitCloud{}
 	err := reconcileCursorCloudLaunch(context.Background(), limited, "https://github.com/acme/widgets.git", "tok", nil)
 	require.Error(t, err)
-	assert.Equal(t, 1, limited.lists)
+	assert.Equal(t, 2, limited.lists)
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()

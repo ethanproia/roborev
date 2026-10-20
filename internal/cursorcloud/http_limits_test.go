@@ -16,6 +16,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAPIErrorHonorsRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"message":"slow down"}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := NewHTTPClient("k", WithBaseURL(srv.URL))
+	_, err := client.GetAgent(context.Background(), "bc_1")
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusTooManyRequests, apiErr.StatusCode)
+	assert.Equal(t, 7*time.Second, apiErr.RetryAfter)
+
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	assert.Equal(t, 7*time.Second, parseRetryAfter("7", now))
+	assert.Equal(t, time.Duration(0), parseRetryAfter("", now))
+	assert.Equal(t, 30*time.Second, parseRetryAfter("Tue, 20 Oct 2026 12:00:30 GMT", now))
+	assert.Equal(t, time.Duration(0), parseRetryAfter("Tue, 20 Oct 2026 11:59:59 GMT", now))
+}
+
 func TestDefaultResponseHeaderTimeout(t *testing.T) {
 	c, ok := NewHTTPClient("k").(*httpClient)
 	require.True(t, ok)

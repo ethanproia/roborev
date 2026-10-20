@@ -580,6 +580,9 @@ func reconcileCursorCloudLaunch(ctx context.Context, client cursorcloud.Client, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// caller bounds the single follow-up after a list 429. The tight loop
+	// below stays on a context the caller's cancel cannot finish.
+	caller := ctx
 	// The create was sent. Every pass, including the wait between lists,
 	// uses a context the caller's deadline and cancel cannot finish.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cursorCloudReconcileWindow)
@@ -592,6 +595,7 @@ func reconcileCursorCloudLaunch(ctx context.Context, client cursorcloud.Client, 
 	var errs []error
 	foundLaunch := false
 	windowExpired := false
+	var limitErr error
 	backoff := cursorCloudReconcileBackoff
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -619,6 +623,10 @@ func reconcileCursorCloudLaunch(ctx context.Context, client cursorcloud.Client, 
 		if err != nil {
 			errs = appendReconcileErr(errs, fmt.Errorf("cursor-cloud: reconcile list: %w", err))
 			if cursorCloudRateLimited(err) {
+				// Stop the tight loop. A 429 joined with another list error
+				// is the same stop. One follow-up, after this function's
+				// loop, waits out Retry-After on the caller's context.
+				limitErr = err
 				break
 			}
 		} else if found || matchErr != nil {
@@ -650,6 +658,13 @@ func reconcileCursorCloudLaunch(ctx context.Context, client cursorcloud.Client, 
 		backoff *= 2
 		if backoff > cursorCloudReconcileBackoffMax {
 			backoff = cursorCloudReconcileBackoffMax
+		}
+	}
+	if !foundLaunch && limitErr != nil {
+		if retryErr := retryCursorCloudListOnce(caller, client, repoURL, marker, output, onCleaned, limitErr); retryErr != nil {
+			errs = appendReconcileErr(errs, retryErr)
+		} else {
+			foundLaunch = true
 		}
 	}
 	if !foundLaunch {
@@ -701,6 +716,74 @@ func cursorCloudRateLimited(err error) bool {
 		return cursorCloudRateLimited(wrapped.Unwrap())
 	}
 	return false
+}
+
+// cursorCloudListRetryWait is how long the one follow-up waits after a list
+// 429 stopped the tight loop. Retry-After is the server's delay. Without
+// that header, the wait is the existing pause between reconcile lists.
+func cursorCloudListRetryWait(err error) time.Duration {
+	if d := cursorCloudRetryAfter(err); d > 0 {
+		return d
+	}
+	return cursorCloudReconcileBackoff
+}
+
+func cursorCloudRetryAfter(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	if apiErr, ok := err.(*cursorcloud.APIError); ok { //nolint:errorlint // walk every joined sibling; errors.As returns only the first APIError
+		if apiErr != nil && apiErr.RetryAfter > 0 {
+			return apiErr.RetryAfter
+		}
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, part := range joined.Unwrap() {
+			if d := cursorCloudRetryAfter(part); d > 0 {
+				return d
+			}
+		}
+		return 0
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return cursorCloudRetryAfter(wrapped.Unwrap())
+	}
+	return 0
+}
+
+// retryCursorCloudListOnce is the in-process follow-up after a list 429
+// breaks reconcile. It waits on ctx, so a canceled caller does not list
+// again and does not mark the launch cleaned. One attempt: a second 429
+// stops, and the startup sweep remains the later path.
+func retryCursorCloudListOnce(ctx context.Context, client cursorcloud.Client, repoURL, marker string, output io.Writer, onCleaned []func() error, cause error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := waitCursorCloud(ctx, cursorCloudListRetryWait(cause)); err != nil {
+		return err
+	}
+	listCtx, listCancel := context.WithTimeout(ctx, cursorCloudDeleteTimeout)
+	agents, err := client.ListAgents(listCtx)
+	listCancel()
+	if err != nil {
+		return fmt.Errorf("cursor-cloud: reconcile list: %w", err)
+	}
+	passCtx, passCancel := context.WithTimeout(ctx, cursorCloudReconcilePassTimeout)
+	found, matchErr := deleteMatchingCursorCloudLaunch(passCtx, client, agents, repoURL, marker, output)
+	passCancel()
+	if matchErr != nil {
+		return matchErr
+	}
+	if !found {
+		return errors.New("cursor-cloud: reconcile did not find the launch")
+	}
+	if len(onCleaned) > 0 && onCleaned[0] != nil {
+		return onCleaned[0]()
+	}
+	return nil
 }
 
 // MarkCursorCloudSent marks a failure after CreateAgent was sent. The
