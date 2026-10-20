@@ -1754,35 +1754,31 @@ func (p *PgPool) ensureLocalCloudLaunchTable(ctx context.Context) {
 	}
 	// Older builds created this table with ON DELETE CASCADE. Dropping the
 	// job must not drop the launch row. Rows are not rewritten. Only the
-	// owned schema's job_id -> review_jobs(id) constraint is dropped.
+	// current schema's launch table oid, and only its job_id foreign key
+	// to review_jobs(id), is dropped.
 	if _, err := p.pool.Exec(ctx, dropCloudLaunchJobFKSQL); err != nil {
 		log.Printf("cursor-cloud: drop launch foreign key: %v", err)
 	}
 }
 
-// dropCloudLaunchJobFKSQL drops one constraint: roborev.review_job_cloud_launches.job_id
-// referencing roborev.review_jobs(id). Other schemas and other foreign keys stay.
+// dropCloudLaunchJobFKSQL drops one constraint: the current schema's
+// review_job_cloud_launches.job_id referencing that schema's review_jobs(id).
+// The table is chosen by oid (to_regclass), so another schema's copy is kept.
 const dropCloudLaunchJobFKSQL = `DO $$
 DECLARE r record;
 BEGIN
   FOR r IN
     SELECT con.conname
     FROM pg_constraint con
-    JOIN pg_class c ON c.oid = con.conrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    JOIN pg_class f ON f.oid = con.confrelid
-    JOIN pg_namespace fn ON fn.oid = f.relnamespace
-    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = con.conkey[1]
-    JOIN pg_attribute fa ON fa.attrelid = f.oid AND fa.attnum = con.confkey[1]
-    WHERE n.nspname = '` + pgSchemaName + `'
-      AND c.relname = 'review_job_cloud_launches'
+    JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = con.conkey[1]
+    JOIN pg_attribute fa ON fa.attrelid = con.confrelid AND fa.attnum = con.confkey[1]
+    WHERE con.conrelid = to_regclass(format('%I.%I', current_schema(), 'review_job_cloud_launches'))
+      AND con.confrelid = to_regclass(format('%I.%I', current_schema(), 'review_jobs'))
       AND con.contype = 'f'
       AND cardinality(con.conkey) = 1
       AND a.attname = 'job_id'
-      AND fn.nspname = '` + pgSchemaName + `'
-      AND f.relname = 'review_jobs'
       AND fa.attname = 'id'
   LOOP
-    EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', '` + pgSchemaName + `', 'review_job_cloud_launches', r.conname);
+    EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', current_schema(), 'review_job_cloud_launches', r.conname);
   END LOOP;
 END $$`

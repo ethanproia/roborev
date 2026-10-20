@@ -14,13 +14,12 @@ import (
 func TestDropCloudLaunchJobFKSQLTargetsOwnedJobConstraint(t *testing.T) {
 	t.Parallel()
 	sql := dropCloudLaunchJobFKSQL
-	assert.Contains(t, sql, "n.nspname = '"+pgSchemaName+"'")
-	assert.Contains(t, sql, "fn.nspname = '"+pgSchemaName+"'")
+	assert.Contains(t, sql, "current_schema()")
+	assert.Contains(t, sql, "to_regclass(format('%I.%I', current_schema(), 'review_job_cloud_launches'))")
+	assert.Contains(t, sql, "to_regclass(format('%I.%I', current_schema(), 'review_jobs'))")
 	assert.Contains(t, sql, "a.attname = 'job_id'")
-	assert.Contains(t, sql, "f.relname = 'review_jobs'")
 	assert.Contains(t, sql, "fa.attname = 'id'")
 	assert.Contains(t, sql, "cardinality(con.conkey) = 1")
-	assert.Contains(t, sql, "ALTER TABLE %I.%I DROP CONSTRAINT %I', '"+pgSchemaName+"'")
 	assert.NotContains(t, sql, "r.nspname")
 }
 

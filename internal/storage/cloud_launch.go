@@ -121,6 +121,29 @@ func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	return out, rows.Err()
 }
 
+// ListOrphanedCloudLaunches returns uncleaned launches whose job row is gone.
+// The note stays readable on GET /api/status after a job or repo delete.
+func (db *DB) ListOrphanedCloudLaunches() ([]OrphanedCloudLaunch, error) {
+	rows, err := db.Query(`SELECT l.job_id, COALESCE(l.agent_id, ''), l.orphan_note
+		FROM review_job_cloud_launches l
+		LEFT JOIN review_jobs j ON j.id = l.job_id
+		WHERE l.cleaned = 0 AND l.orphan_note != '' AND j.id IS NULL
+		ORDER BY l.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OrphanedCloudLaunch
+	for rows.Next() {
+		var row OrphanedCloudLaunch
+		if err := rows.Scan(&row.JobID, &row.AgentID, &row.OrphanNote); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // NoteCloudLaunchRisk records a launch that is still uncleaned. The job error
 // is what status JSON shows. The row is not marked cleaned.
 func (db *DB) NoteCloudLaunchRisk(jobID int64, msg string) error {

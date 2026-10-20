@@ -3,6 +3,7 @@
  */
 import type { AgentHookSnooze } from "./agentHookSnooze";
 import type { AutoDesignStatus } from "./autoDesignStatus";
+import type { OrphanedCloudLaunch } from "./orphanedCloudLaunch";
 
 export interface DaemonStatus {
   /** A URL to the JSON Schema for this object. */
@@ -21,6 +22,7 @@ export interface DaemonStatus {
   machine_id?: string;
   max_workers: number;
   network?: string;
+  orphaned_launches?: OrphanedCloudLaunch[];
   port?: number;
   queue_paused: boolean;
   queued_jobs: number;

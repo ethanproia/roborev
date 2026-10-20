@@ -735,31 +735,32 @@ type CostEnvelope struct {
 
 type DaemonStatus struct {
 	// Schema A URL to the JSON Schema for this object.
-	Schema               *string           `json:"$schema,omitempty"`
-	ActiveSnoozes        []AgentHookSnooze `json:"active_snoozes" validate:"required"`
-	ActiveWorkers        int64             `json:"active_workers"`
-	Address              *string           `json:"address,omitempty"`
-	AppliedJobs          int64             `json:"applied_jobs"`
-	AutoDesign           *AutoDesignStatus `json:"auto_design,omitempty"`
-	CanceledJobs         int64             `json:"canceled_jobs"`
-	CompletedJobs        int64             `json:"completed_jobs"`
-	ConfigReloadCounter  *int64            `json:"config_reload_counter,omitempty" validate:"omitempty,gte=0"`
-	ConfigReloadedAt     *string           `json:"config_reloaded_at,omitempty"`
-	FailedJobs           int64             `json:"failed_jobs"`
-	MachineID            *uuid.UUID        `json:"machine_id,omitempty"`
-	MaxWorkers           int64             `json:"max_workers"`
-	Network              *string           `json:"network,omitempty"`
-	Port                 *int64            `json:"port,omitempty"`
-	QueuePaused          bool              `json:"queue_paused"`
-	QueuedJobs           int64             `json:"queued_jobs"`
-	RebasedJobs          int64             `json:"rebased_jobs"`
-	RunningJobs          int64             `json:"running_jobs"`
-	SkippedJobs          int64             `json:"skipped_jobs"`
-	UpdateDrainExpiresAt *string           `json:"update_drain_expires_at,omitempty"`
-	UpdateDrainPolicy    *string           `json:"update_drain_policy,omitempty"`
-	UpdateDraining       bool              `json:"update_draining"`
-	Version              string            `json:"version" validate:"required"`
-	WebCapabilities      []string          `json:"web_capabilities" validate:"required"`
+	Schema               *string               `json:"$schema,omitempty"`
+	ActiveSnoozes        []AgentHookSnooze     `json:"active_snoozes" validate:"required"`
+	ActiveWorkers        int64                 `json:"active_workers"`
+	Address              *string               `json:"address,omitempty"`
+	AppliedJobs          int64                 `json:"applied_jobs"`
+	AutoDesign           *AutoDesignStatus     `json:"auto_design,omitempty"`
+	CanceledJobs         int64                 `json:"canceled_jobs"`
+	CompletedJobs        int64                 `json:"completed_jobs"`
+	ConfigReloadCounter  *int64                `json:"config_reload_counter,omitempty" validate:"omitempty,gte=0"`
+	ConfigReloadedAt     *string               `json:"config_reloaded_at,omitempty"`
+	FailedJobs           int64                 `json:"failed_jobs"`
+	MachineID            *uuid.UUID            `json:"machine_id,omitempty"`
+	MaxWorkers           int64                 `json:"max_workers"`
+	Network              *string               `json:"network,omitempty"`
+	OrphanedLaunches     []OrphanedCloudLaunch `json:"orphaned_launches,omitempty"`
+	Port                 *int64                `json:"port,omitempty"`
+	QueuePaused          bool                  `json:"queue_paused"`
+	QueuedJobs           int64                 `json:"queued_jobs"`
+	RebasedJobs          int64                 `json:"rebased_jobs"`
+	RunningJobs          int64                 `json:"running_jobs"`
+	SkippedJobs          int64                 `json:"skipped_jobs"`
+	UpdateDrainExpiresAt *string               `json:"update_drain_expires_at,omitempty"`
+	UpdateDrainPolicy    *string               `json:"update_drain_policy,omitempty"`
+	UpdateDraining       bool                  `json:"update_draining"`
+	Version              string                `json:"version" validate:"required"`
+	WebCapabilities      []string              `json:"web_capabilities" validate:"required"`
 }
 
 func (d DaemonStatus) Validate() error {
@@ -787,6 +788,13 @@ func (d DaemonStatus) Validate() error {
 		if v, ok := any(d.MachineID).(runtime.Validator); ok {
 			if err := v.Validate(); err != nil {
 				errors = errors.Append("MachineID", err)
+			}
+		}
+	}
+	for i, item := range d.OrphanedLaunches {
+		if v, ok := any(item).(runtime.Validator); ok {
+			if err := v.Validate(); err != nil {
+				errors = errors.Append(fmt.Sprintf("OrphanedLaunches[%d]", i), err)
 			}
 		}
 	}
@@ -976,6 +984,7 @@ type EnqueueCreatedResponse struct {
 	MinSeverity           *string                `json:"min_severity,omitempty"`
 	Model                 *string                `json:"model,omitempty"`
 	NonVoting             *bool                  `json:"non_voting,omitempty"`
+	OrphanWarning         *string                `json:"orphan_warning,omitempty"`
 	OutputPrefix          *string                `json:"output_prefix,omitempty"`
 	PanelMemberConfigJSON *string                `json:"panel_member_config_json,omitempty"`
 	PanelMemberIndex      *int64                 `json:"panel_member_index,omitempty"`
@@ -2523,6 +2532,16 @@ func (m MoveRepoInputBody) Validate() error {
 	return runtime.ConvertValidatorError(typesValidator.Struct(m))
 }
 
+type OrphanedCloudLaunch struct {
+	AgentID    *string `json:"agent_id,omitempty"`
+	JobID      int64   `json:"job_id"`
+	OrphanNote string  `json:"orphan_note" validate:"required"`
+}
+
+func (o OrphanedCloudLaunch) Validate() error {
+	return runtime.ConvertValidatorError(typesValidator.Struct(o))
+}
+
 type OverviewStats struct {
 	Applied  int64 `json:"applied"`
 	Canceled int64 `json:"canceled"`
@@ -2562,6 +2581,7 @@ type PanelEnqueueResponse struct {
 	MinSeverity           *string                `json:"min_severity,omitempty"`
 	Model                 *string                `json:"model,omitempty"`
 	NonVoting             *bool                  `json:"non_voting,omitempty"`
+	OrphanWarning         *string                `json:"orphan_warning,omitempty"`
 	OutputPrefix          *string                `json:"output_prefix,omitempty"`
 	PanelMemberConfigJSON *string                `json:"panel_member_config_json,omitempty"`
 	PanelMemberIndex      *int64                 `json:"panel_member_index,omitempty"`
@@ -3250,6 +3270,7 @@ type ReviewJob struct {
 	MinSeverity           *string                `json:"min_severity,omitempty"`
 	Model                 *string                `json:"model,omitempty"`
 	NonVoting             *bool                  `json:"non_voting,omitempty"`
+	OrphanWarning         *string                `json:"orphan_warning,omitempty"`
 	OutputPrefix          *string                `json:"output_prefix,omitempty"`
 	PanelMemberConfigJSON *string                `json:"panel_member_config_json,omitempty"`
 	PanelMemberIndex      *int64                 `json:"panel_member_index,omitempty"`
