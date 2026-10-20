@@ -156,6 +156,28 @@ func TestCursorCloudRestartKeepsEveryAttempt(t *testing.T) {
 
 // TestCursorCloudRestartRetires404 marks cleanup done when delete reports
 // the agent is already gone, and not when delete fails.
+// TestDoneContextPersistsNoCloudLaunch pins the order of the pre-create
+// checks. A context that is already done must not insert a launch row and
+// must not call create. Moving the context check to after BindLaunch leaves
+// a row and this test fails.
+func TestDoneContextPersistsNoCloudLaunch(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	cloud := &agent.CursorCloudAgent{Client: fake, RepoURL: cursorCloudRestartRepo}
+	cloud.SetLaunchLimitsForTest(4, 20)
+	bound := tc.Pool.bindCursorCloudLaunch(testWorkerID, job, cloud)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	before := cursorCloudCallCount(fake, cursorcloudtest.MethodCreate)
+	_, err := bound.Review(ctx, tc.TmpDir, sha, "review the commit", nil)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, before, cursorCloudCallCount(fake, cursorcloudtest.MethodCreate))
+	n, nerr := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, nerr)
+	assert.Equal(t, 0, n)
+}
+
 func TestCursorCloudRestartRetires404(t *testing.T) {
 	tc, fake := cursorCloudRestartFixture(t)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)
