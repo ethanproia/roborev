@@ -27,8 +27,7 @@ func TestCloudLaunchRebuildDropsCascadeAndKeepsRows(t *testing.T) {
 			db := openTestDB(t)
 			t.Cleanup(func() { db.Close() })
 			row := seedCascadeLaunch(t, db, "/tmp/fk-repo-"+name)
-			db.SetMaxOpenConns(1)
-			setDBForeignKeys(t, db, fkOn)
+			require.NoError(t, deleteReviewJobFK(t, db, row.jobID, fkOn))
 			require.NoError(t, db.DeleteRepo(row.repoID, true))
 			assertLaunchKept(t, db, row)
 		})
@@ -93,19 +92,6 @@ func assertLaunchKept(t *testing.T, db *DB, row cascadeLaunch) {
 	var fks int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_list('review_job_cloud_launches')`).Scan(&fks))
 	require.Equal(t, 0, fks)
-}
-
-func setDBForeignKeys(t *testing.T, db *DB, on bool) {
-	t.Helper()
-	conn, err := db.Conn(t.Context())
-	require.NoError(t, err)
-	stmt := `PRAGMA foreign_keys = OFF`
-	if on {
-		stmt = `PRAGMA foreign_keys = ON`
-	}
-	_, err = conn.ExecContext(t.Context(), stmt)
-	require.NoError(t, err)
-	require.NoError(t, conn.Close())
 }
 
 func deleteReviewJobFK(t *testing.T, db *DB, jobID int64, fkOn bool) error {

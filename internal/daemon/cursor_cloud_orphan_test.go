@@ -330,7 +330,7 @@ func TestStatusShowsOrphanNoteAfterJobAndRepoDelete(t *testing.T) {
 	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
 	require.NoError(t, tc.DB.BeginCloudLaunch(job.ID, testWorkerID, "status-orphan-tok", cursorCloudRestartRepo))
 	require.NoError(t, tc.DB.AttachCloudAgent(job.ID, "status-orphan-tok", "bc_leaked"))
-	require.NoError(t, tc.DB.DeleteRepo(tc.Repo.ID, true))
+	deleteCloudJobThenRepo(t, tc.DB, job.ID, tc.Repo.ID)
 
 	rr := serveHuma(t, srv, http.MethodGet, "/api/status", nil)
 	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
