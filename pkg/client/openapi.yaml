@@ -993,6 +993,10 @@ components:
           type: integer
         network:
           type: string
+        orphaned_launches:
+          items:
+            $ref: "#/components/schemas/OrphanedCloudLaunch"
+          type: array
         port:
           format: int64
           type: integer
@@ -1258,6 +1262,8 @@ components:
           type: string
         non_voting:
           type: boolean
+        orphan_warning:
+          type: string
         output_prefix:
           type: string
         panel_member_config_json:
@@ -2713,6 +2719,20 @@ components:
         - path
         - identity
       type: object
+    OrphanedCloudLaunch:
+      additionalProperties: false
+      properties:
+        agent_id:
+          type: string
+        job_id:
+          format: int64
+          type: integer
+        orphan_note:
+          type: string
+      required:
+        - job_id
+        - orphan_note
+      type: object
     OverviewStats:
       additionalProperties: false
       properties:
@@ -2820,6 +2840,8 @@ components:
           type: string
         non_voting:
           type: boolean
+        orphan_warning:
+          type: string
         output_prefix:
           type: string
         panel_member_config_json:
@@ -3680,6 +3702,8 @@ components:
           type: string
         non_voting:
           type: boolean
+        orphan_warning:
+          type: string
         output_prefix:
           type: string
         panel_member_config_json:
