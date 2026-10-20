@@ -14,8 +14,9 @@ const CloudLaunchPendingNote = "cursor-cloud orphan risk: launch pending cleanup
 const CloudLaunchInterruptedError = "cursor-cloud launch interrupted by daemon restart; not relaunched"
 
 type CloudLaunch struct {
-	ID    int64
-	JobID int64
+	ID     int64
+	JobID  int64
+	RepoID int64
 	// Token is the column text when it is not NULL. TokenNull means the
 	// column itself is NULL; Token is then left unset.
 	Token     string
@@ -70,13 +71,19 @@ func (db *DB) MarkCloudLaunchCleaned(launchID int64) error {
 	return err
 }
 
-// MarkCloudLaunchCleanedByToken clears every uncleaned row for token.
-// The token is unique per launch row and the row can outlive its job, so
-// the job id is not part of the key. orphan_note changes only inside
-// MarkCloudLaunchCleaned. Callers mark cleaned only after a nil or 404
-// delete of every VM this token could own.
-func (db *DB) MarkCloudLaunchCleanedByToken(token string) error {
-	rows, err := db.Query(`SELECT id FROM review_job_cloud_launches WHERE launch_token = ? AND cleaned = 0 ORDER BY id`, token)
+// MarkCloudLaunchCleanedByToken clears uncleaned rows for this job, repo,
+// and token. The same token on another job or repo stays uncleaned.
+// After the job row is deleted, recovery still cleans that launch by job id
+// and token, because the job's repo can no longer be read. orphan_note
+// changes only inside MarkCloudLaunchCleaned. Callers mark cleaned only
+// after a nil or 404 delete of every VM this token could own.
+func (db *DB) MarkCloudLaunchCleanedByToken(jobID, repoID int64, token string) error {
+	rows, err := db.Query(`SELECT l.id
+		FROM review_job_cloud_launches l
+		LEFT JOIN review_jobs j ON j.id = l.job_id
+		WHERE l.cleaned = 0 AND l.job_id = ? AND l.launch_token = ?
+		  AND (j.repo_id = ? OR j.id IS NULL)
+		ORDER BY l.id`, jobID, token, repoID)
 	if err != nil {
 		return err
 	}
@@ -102,7 +109,7 @@ func (db *DB) MarkCloudLaunchCleanedByToken(token string) error {
 }
 
 func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
-	rows, err := db.Query(`SELECT l.id, l.job_id, l.launch_token, COALESCE(l.agent_id, ''), COALESCE(r.root_path, ''),
+	rows, err := db.Query(`SELECT l.id, l.job_id, COALESCE(j.repo_id, 0), l.launch_token, COALESCE(l.agent_id, ''), COALESCE(r.root_path, ''),
 		COALESCE(l.repo_identity, ''), COALESCE(l.created_at, '')
 		FROM review_job_cloud_launches l
 		LEFT JOIN review_jobs j ON j.id = l.job_id
@@ -116,7 +123,7 @@ func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	for rows.Next() {
 		var row CloudLaunch
 		var token sql.NullString
-		if err := rows.Scan(&row.ID, &row.JobID, &token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt); err != nil {
+		if err := rows.Scan(&row.ID, &row.JobID, &row.RepoID, &token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt); err != nil {
 			return nil, err
 		}
 		row.TokenNull = !token.Valid

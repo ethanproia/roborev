@@ -76,7 +76,7 @@ func TestMarkCloudLaunchCleanedByTokenClearsOrphanNote(t *testing.T) {
 		(job_id, launch_token, orphan_note) VALUES (?, 'clear-tok', ?)`, job.ID, CloudLaunchPendingNote)
 	require.NoError(t, err)
 
-	require.NoError(t, db.MarkCloudLaunchCleanedByToken("clear-tok"))
+	require.NoError(t, db.MarkCloudLaunchCleanedByToken(job.ID, job.RepoID, "clear-tok"))
 	var cleaned int
 	var note string
 	require.NoError(t, db.QueryRow(
