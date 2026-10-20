@@ -78,6 +78,61 @@ func TestUncleanedLaunchStaysVisibleWhenFKOff(t *testing.T) {
 	assert.Empty(t, rows[0].RepoPath)
 }
 
+// TestUncleanedLaunchOutlivesJobAndRepoDelete is the foreign-key pin.
+// With PRAGMA foreign_keys=ON, deleting the job and then the repo must leave
+// the uncleaned launch row in place. ON DELETE CASCADE removes it. The
+// migrated case starts from that cascade table, as an existing database does.
+func TestUncleanedLaunchOutlivesJobAndRepoDelete(t *testing.T) {
+	t.Parallel()
+	for _, setup := range []struct {
+		name string
+		open func(t *testing.T) (*DB, *ReviewJob)
+	}{
+		{name: "fresh", open: func(t *testing.T) (*DB, *ReviewJob) {
+			t.Helper()
+			db := openTestDBWithForeignKeys(t, 1)
+			return db, runningCloudJob(t, db)
+		}},
+		{name: "migrated", open: openMigratedCascadeLaunchDB},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			t.Parallel()
+			db, job := setup.open(t)
+			var fk int
+			require.NoError(t, db.QueryRow(`PRAGMA foreign_keys`).Scan(&fk))
+			require.Equal(t, 1, fk)
+			require.NoError(t, db.BeginCloudLaunch(job.ID, "w", "tok-live", "https://example.com/acme/repo.git"))
+			require.NoError(t, db.ensureCloudLaunchTable())
+			before := snapshotLaunchRows(t, db)
+
+			_, err := db.Exec(`DELETE FROM review_jobs WHERE id = ?`, job.ID)
+			require.NoError(t, err)
+			_, err = db.Exec(`DELETE FROM commits WHERE repo_id = ?`, job.RepoID)
+			require.NoError(t, err)
+			_, err = db.Exec(`DELETE FROM repos WHERE id = ?`, job.RepoID)
+			require.NoError(t, err)
+
+			after := snapshotLaunchRows(t, db)
+			require.Len(t, after, 1)
+			assert.Equal(t, before, after)
+			assert.Equal(t, "0", after[0]["cleaned"])
+		})
+	}
+}
+
+func openMigratedCascadeLaunchDB(t *testing.T) (*DB, *ReviewJob) {
+	t.Helper()
+	db := openTestDBWithForeignKeys(t, 1)
+	_, err := db.Exec(`DROP TABLE review_job_cloud_launches`)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE review_job_cloud_launches (
+		id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
+		launch_token TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', cleaned INTEGER NOT NULL DEFAULT 0,
+		repo_identity TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+	require.NoError(t, err)
+	return db, runningCloudJob(t, db)
+}
+
 func TestLaunchRowSurvivesRepoDelete(t *testing.T) {
 	t.Parallel()
 	for _, fk := range []int{1, 0} {
