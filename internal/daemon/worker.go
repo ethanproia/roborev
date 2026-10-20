@@ -2007,11 +2007,12 @@ func failoverWorkflow(job *storage.ReviewJob) string {
 // Personal CI jobs use only a stored, locally resolved backup. Ordinary jobs
 // retain the workflow-config fallback.
 func (wp *WorkerPool) resolveBackupAgent(job *storage.ReviewJob) string {
-	// A repo or global host = cursor-cloud is an explicit choice. The enqueue
-	// --host flag is not stored on the job, so it cannot be told apart from
-	// ROBOREV_DEFAULT_HOST. Any configured host=cursor-cloud is explicit and
-	// never falls back to a local backup. The env-only path still may.
-	if job != nil && agent.CanonicalName(job.Agent) == agent.CursorCloudHost && wp.explicitCursorCloudHost(job) {
+	// --host is stored on the job. A repo or global host = cursor-cloud is
+	// also explicit. Either one refuses every backup, including the workflow
+	// backup resolved below. ROBOREV_DEFAULT_HOST alone leaves the bit unset
+	// and may still fail over.
+	if job != nil && agent.CanonicalName(job.Agent) == agent.CursorCloudHost &&
+		(job.ExplicitHost || wp.explicitCursorCloudHost(job)) {
 		return ""
 	}
 	// An explicit per-job backup wins, for reliability: the enqueuer (e.g. a CI
