@@ -1377,6 +1377,7 @@ func (wp *WorkerPool) processJob(workerID string, job *storage.ReviewJob) {
 			{implementation: true},
 		}, err != nil)
 	}
+	agentPrompt := reviewPrompt
 	if err == nil {
 		preparedPrompt, prepareErr := pb.Prepare(reviewPrompt, prompt.SnapshotTarget{
 			RepoPath: reviewRepoPath, ConfigRepoPath: checkout.resolvedConfigRepoPath(),
@@ -1389,6 +1390,7 @@ func (wp *WorkerPool) processJob(workerID string, job *storage.ReviewJob) {
 			defer preparedPrompt.Cleanup()
 		}
 		reviewPrompt = preparedPrompt.Prompt
+		ctx, agentPrompt = agent.UseDaemonPromptSnapshot(ctx, a, preparedPrompt)
 		a = wp.bindCursorCloudLaunch(workerID, job, a)
 		wp.markAgentInvoked(workerID, job, a)
 		if planningPrompt != "" {
@@ -1407,11 +1409,11 @@ func (wp *WorkerPool) processJob(workerID string, job *storage.ReviewJob) {
 	var agentReview review.ReviewResult
 	if err == nil && (job.IsTaskJob() || job.IsFixJob()) {
 		agentReview.Output, err = a.Review(
-			ctx, reviewRepoPath, implementationRef, reviewPrompt, agentOutput,
+			ctx, reviewRepoPath, implementationRef, agentPrompt, agentOutput,
 		)
 	} else if err == nil {
 		agentReview, err = review.RunAgentReview(
-			ctx, a, reviewRepoPath, job.GitRef, reviewPrompt, job.ReviewType,
+			ctx, a, reviewRepoPath, job.GitRef, agentPrompt, job.ReviewType,
 			effectiveMinSeverity, agentOutput,
 		)
 	}

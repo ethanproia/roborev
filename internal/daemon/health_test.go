@@ -101,7 +101,7 @@ func setupTestServer(t *testing.T) *Server {
 
 // executeHealthCheck sends a request to the health endpoint and returns the recorder.
 func executeHealthCheck(server *Server, method string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, "/api/health", nil)
+	req := newLocalAPIRequest(method, "/api/health", nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 	return w

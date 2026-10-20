@@ -101,7 +101,7 @@ func TestHandleBatchJobs(t *testing.T) {
 	})
 
 	t.Run("wrong method fails", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs/batch", nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs/batch", nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 		testutil.AssertStatusCode(t, w, http.StatusMethodNotAllowed)
@@ -371,7 +371,7 @@ func TestHandleRemap(t *testing.T) {
 		}
 		body = append(body[:len(body)-1], []byte(`]}`)...)
 
-		req := httptest.NewRequest(
+		req := newLocalAPIRequest(
 			http.MethodPost, "/api/remap",
 			bytes.NewReader(body),
 		)
@@ -475,7 +475,7 @@ func TestHandleGetReviewJobIDParsing(t *testing.T) {
 			if tt.query != "" {
 				url += "?" + tt.query
 			}
-			req := httptest.NewRequest(http.MethodGet, url, nil)
+			req := newLocalAPIRequest(http.MethodGet, url, nil)
 			w := httptest.NewRecorder()
 
 			server.httpServer.Handler.ServeHTTP(w, req)

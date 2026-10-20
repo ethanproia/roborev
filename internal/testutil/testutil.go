@@ -280,6 +280,7 @@ func MakeJSONRequest(t *testing.T, method, path string, body any) *http.Request 
 		t.Fatalf("Failed to marshal request body: %v", err)
 	}
 	req := httptest.NewRequest(method, path, bytes.NewReader(reqBody))
+	req.Host = "127.0.0.1"
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }

@@ -25,7 +25,7 @@ func effectiveAgentic(ctx context.Context, agentic bool) bool {
 
 // RunPlan invokes an agent in a disposable worktree with read-only permissions.
 // Planning never resumes an implementation session or promotes file changes.
-func RunPlan(ctx context.Context, a Agent, repoPath, ref, planningPrompt string, output io.Writer, prepare func(repoPath, text string) (string, func(), error)) (string, error) {
+func RunPlan(ctx context.Context, a Agent, repoPath, ref, planningPrompt string, output io.Writer, prepare func(context.Context, string, string) (context.Context, string, func(), error)) (string, error) {
 	ctx = context.WithValue(ctx, planningContextKey{}, true)
 	sha, err := gitrepo.Resolve(ctx, repoPath, ref)
 	if err != nil {
@@ -45,13 +45,14 @@ func RunPlan(ctx context.Context, a Agent, repoPath, ref, planningPrompt string,
 	}
 	defer func() { _ = wt.Close(context.Background()) }()
 	if prepare != nil {
-		prepared, cleanup, prepareErr := prepare(wt.Dir, planningPrompt)
+		preparedCtx, prepared, cleanup, prepareErr := prepare(ctx, wt.Dir, planningPrompt)
 		if cleanup != nil {
 			defer cleanup()
 		}
 		if prepareErr != nil {
 			return "", fmt.Errorf("prepare planning prompt: %w", prepareErr)
 		}
+		ctx = preparedCtx
 		planningPrompt = prepared
 	}
 

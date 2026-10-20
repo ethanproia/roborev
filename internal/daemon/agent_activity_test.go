@@ -3,7 +3,6 @@ package daemon
 import (
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -94,7 +93,7 @@ func TestAgentActivityRoutesRejectBrowserCapture(t *testing.T) {
 		{"application/json", "null", http.StatusForbidden},
 		{"application/json; charset=utf-8", "", http.StatusAccepted},
 	} {
-		req := httptest.NewRequest(http.MethodPost, TelemetryAgentCallPath, nil)
+		req := newLocalAPIRequest(http.MethodPost, TelemetryAgentCallPath, nil)
 		req.Header.Set("Content-Type", tc.contentType)
 		req.Header.Set("Origin", tc.origin)
 		assert.Equal(t, tc.status, serveTelemetryCapture(server.httpServer.Handler, req).Code)

@@ -38,7 +38,7 @@ func serveTelemetryCapture(handler http.Handler, request *http.Request) *httptes
 }
 
 func newTelemetryCaptureRequest(method string, body []byte) *http.Request {
-	request := httptest.NewRequest(method, TelemetryEventsPath, bytes.NewReader(body))
+	request := newLocalAPIRequest(method, TelemetryEventsPath, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	return request
 }

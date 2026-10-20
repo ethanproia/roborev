@@ -232,7 +232,7 @@ func newServerWithLogs(
 
 	s.httpServer = &http.Server{
 		Addr:    cfg.ServerAddr,
-		Handler: withAPIAuthentication(mux, cfg.AuthKey),
+		Handler: withAPIHostAllowlist(withAPIAuthentication(mux, cfg.AuthKey), cfg.ServerAddr),
 	}
 
 	return s

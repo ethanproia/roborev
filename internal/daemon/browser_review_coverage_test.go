@@ -26,7 +26,7 @@ func TestBrowserReviewProjectionOmitsFileCoverage(t *testing.T) {
 	assert.Contains(t, loopbackResponse.Body.String(), "file_coverage")
 
 	browserResponse := httptest.NewRecorder()
-	serveBrowserReview(browserResponse, httptest.NewRequest(
+	serveBrowserReview(browserResponse, newLocalAPIRequest(
 		http.MethodGet, "/api/review?job_id="+fmt.Sprint(job.ID), nil,
 	), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(loopbackResponse.Body.Bytes())
@@ -48,7 +48,7 @@ func TestBrowserReviewProjectionOmitsFileCoverage(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(loopback)
 	})
-	request := httptest.NewRequest(http.MethodGet, "/api/review?job_id=2", nil)
+	request := newLocalAPIRequest(http.MethodGet, "/api/review?job_id=2", nil)
 	recorder := httptest.NewRecorder()
 	serveBrowserReview(recorder, request, core)
 	assert.Equal(t, http.StatusOK, recorder.Code)

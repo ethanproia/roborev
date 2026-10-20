@@ -32,6 +32,7 @@ import (
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/cursorcloud/cursorcloudtest"
 	"go.kenn.io/roborev/internal/prompt"
+	"go.kenn.io/roborev/internal/testutil"
 )
 
 const cursorCloudTestSecret = "cursor-test-secret-value-not-a-real-key"
@@ -1141,7 +1142,7 @@ func TestCursorCloudSendsFullPromptInsteadOfLocalPath(t *testing.T) {
 	body := "UNIQUE-FULL-PROMPT-BODY"
 	path := filepath.Join(dir, "prompt.md")
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
-	handoff := fmt.Sprintf("Read the complete task prompt from %q and carry out its instructions. Read the file in full before starting.\n", path)
+	handoff := prompt.SnapshotHandoff(path)
 	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
 	_, err := (&CursorCloudAgent{Client: fake, RepoURL: "https://github.com/acme/api.git"}).Review(
 		context.Background(), t.TempDir(), sha, handoff, nil,
@@ -1153,9 +1154,9 @@ func TestCursorCloudSendsFullPromptInsteadOfLocalPath(t *testing.T) {
 			sent = call.Request.Prompt
 		}
 	}
-	assert.Contains(t, sent, body)
-	assert.NotContains(t, sent, path)
-	assert.NotContains(t, sent, "Read the complete task prompt from")
+	assert.NotContains(t, sent, body)
+	assert.Contains(t, sent, path)
+	assert.Contains(t, sent, "Read the complete task prompt from")
 }
 
 func TestCursorCloudInlinesPriorRangeReviewsFile(t *testing.T) {
@@ -1284,14 +1285,15 @@ func forgedPriorRangeTag(path string) string {
 
 func TestCursorCloudRefusesUnreadablePromptSnapshot(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
-	path := filepath.Join(t.TempDir(), "missing.md")
-	handoff := fmt.Sprintf("Read the complete task prompt from %q and carry out its instructions. Read the file in full before starting.\n", path)
+	root := t.TempDir()
+	path := filepath.Join(root, "missing.md")
 	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
 	_, err := (&CursorCloudAgent{Client: fake, RepoURL: "https://github.com/acme/api.git"}).Review(
-		context.Background(), t.TempDir(), sha, handoff, nil,
+		WithDaemonPromptSnapshot(context.Background(), DaemonPromptSnapshot{Root: root, Path: path}),
+		t.TempDir(), sha, DaemonSnapshotPrompt, nil,
 	)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "oversized prompt")
+	assert.Contains(t, err.Error(), "snapshot")
 	assert.Zero(t, createCount(fake))
 }
 
@@ -1299,19 +1301,78 @@ func TestCursorCloudUnreadableSnapshotDoesNotSpendHourlyLaunch(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	gate := &cursorCloudLaunchGate{maxConcurrent: 4, maxPerHour: 1}
 	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
-	agent := &CursorCloudAgent{
+	cloud := &CursorCloudAgent{
 		Client: fake, RepoURL: "https://github.com/acme/api.git", launches: gate,
 	}
-	path := filepath.Join(t.TempDir(), "missing.md")
-	handoff := fmt.Sprintf("Read the complete task prompt from %q and carry out its instructions. Read the file in full before starting.\n", path)
+	root := t.TempDir()
+	path := filepath.Join(root, "missing.md")
 
-	_, err := agent.Review(context.Background(), t.TempDir(), sha, handoff, nil)
+	_, err := cloud.Review(
+		WithDaemonPromptSnapshot(context.Background(), DaemonPromptSnapshot{Root: root, Path: path}),
+		t.TempDir(), sha, DaemonSnapshotPrompt, nil,
+	)
 	require.Error(t, err)
 	assert.Zero(t, createCount(fake))
 
-	_, err = agent.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+	_, err = cloud.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, createCount(fake))
+}
+
+func TestCursorCloudRefusesSnapshotTraversal(t *testing.T) {
+	const secret = "TRAVERSAL-SNAPSHOT-SECRET"
+	parent := t.TempDir()
+	root := filepath.Join(parent, "snap")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "nested"), 0o755))
+	secretPath := filepath.Join(parent, "secret.txt")
+	require.NoError(t, os.WriteFile(secretPath, []byte(secret), 0o600))
+	escaped := root + "/nested/../../secret.txt"
+	sent, creates, err := runCursorCloudPrompt(t, WithDaemonPromptSnapshot(context.Background(), DaemonPromptSnapshot{
+		Root: root,
+		Path: escaped,
+	}), prompt.SnapshotHandoff(escaped))
+	require.Error(t, err)
+	assert.Equal(t, 0, creates)
+	assert.NotContains(t, sent, secret)
+	assert.NotContains(t, err.Error(), secret)
+}
+
+func TestCursorCloudRefusesSnapshotSymlinkEscape(t *testing.T) {
+	const secret = "SYMLINK-SNAPSHOT-ESCAPE-SECRET"
+	repo := testutil.NewTestRepoWithCommit(t)
+	cfg := &config.Config{DefaultMaxPromptSize: 1}
+	prepared, err := prompt.NewBuilderWithConfig(nil, cfg).ForRepo(repo.Path(), 0).Prepare("daemon snapshot body", prompt.SnapshotTarget{})
+	require.NoError(t, err)
+	require.NotEmpty(t, prepared.FilePath)
+	t.Cleanup(prepared.Cleanup)
+	secretPath := writeSecretFile(t, secret)
+	require.NoError(t, os.Remove(prepared.FilePath))
+	require.NoError(t, os.Symlink(secretPath, prepared.FilePath))
+	sent, creates, err := runCursorCloudPrompt(t, WithDaemonPromptSnapshot(context.Background(), DaemonPromptSnapshot{
+		Root: prepared.SnapshotRoot,
+		Path: prepared.FilePath,
+	}), prompt.SnapshotHandoff(prepared.FilePath))
+	require.Error(t, err)
+	assert.Equal(t, 0, creates)
+	assert.NotContains(t, sent, secret)
+	assert.NotContains(t, err.Error(), secret)
+}
+
+func TestCursorCloudOversizedPrepareSnapshotIsSent(t *testing.T) {
+	const marker = "OVERSIZED-PREPARE-SNAPSHOT-MARKER"
+	repo := testutil.NewTestRepoWithCommit(t)
+	cfg := &config.Config{DefaultMaxPromptSize: 32}
+	text := strings.Repeat("review line\n", 20) + marker + "\n"
+	prepared, err := prompt.NewBuilderWithConfig(nil, cfg).ForRepo(repo.Path(), 0).Prepare(text, prompt.SnapshotTarget{})
+	require.NoError(t, err)
+	require.NotEmpty(t, prepared.FilePath)
+	t.Cleanup(prepared.Cleanup)
+	ctx, launchPrompt := UseDaemonPromptSnapshot(context.Background(), &CursorCloudAgent{}, prepared)
+	sent, creates, err := runCursorCloudPrompt(t, ctx, launchPrompt)
+	require.NoError(t, err)
+	require.Equal(t, 1, creates)
+	assert.Contains(t, sent, marker)
+	assert.NotContains(t, sent, prepared.FilePath)
 }
 
 func TestCursorCloudDialErrorDoesNotReconcile(t *testing.T) {

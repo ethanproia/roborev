@@ -18,7 +18,7 @@ import (
 // query must start with "?" or be empty.
 func listJobsViaHTTP(t *testing.T, server *Server, query string) []storage.ReviewJob {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/jobs"+query, nil)
+	req := newLocalAPIRequest(http.MethodGet, "/api/jobs"+query, nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -205,7 +205,7 @@ func TestListJobsStatsExcludeMembers(t *testing.T) {
 	_, err := db.Exec(`UPDATE review_jobs SET status = 'done' WHERE panel_run_uuid = ?`, runUUID)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	req := newLocalAPIRequest(http.MethodGet, "/api/jobs", nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

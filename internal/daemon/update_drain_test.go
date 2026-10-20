@@ -34,7 +34,7 @@ func postUpdateDrain(
 	t.Helper()
 	data, err := json.Marshal(body)
 	require.NoError(t, err)
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(data))
+	req := newLocalAPIRequest(http.MethodPost, path, bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
@@ -432,7 +432,7 @@ func TestStatusReportsUpdateDrain(t *testing.T) {
 	server, _, _ := newTestServer(t)
 	lease := prepareUpdateDrain(t, server, "owner-status", "wait")
 	w := httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/status", nil))
+	server.httpServer.Handler.ServeHTTP(w, newLocalAPIRequest(http.MethodGet, "/api/status", nil))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	var status storage.DaemonStatus

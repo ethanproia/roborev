@@ -33,12 +33,12 @@ func serveHuma(
 	t.Helper()
 	var req *http.Request
 	if body != nil {
-		req = httptest.NewRequest(
+		req = newLocalAPIRequest(
 			method, path, bytes.NewReader(body),
 		)
 		req.Header.Set("Content-Type", "application/json")
 	} else {
-		req = httptest.NewRequest(method, path, nil)
+		req = newLocalAPIRequest(method, path, nil)
 	}
 	rr := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rr, req)

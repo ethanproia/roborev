@@ -410,7 +410,7 @@ func maintenanceRequest(t *testing.T, server *Server, path string, body any) *ht
 	t.Helper()
 	raw, err := json.Marshal(body)
 	require.NoError(t, err)
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+	req := newLocalAPIRequest(http.MethodPost, path, bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(response, req)
@@ -578,7 +578,7 @@ func TestSyncStatusReportsDaemonPendingWork(t *testing.T) {
 	machineID, err := db.GetMachineID()
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sync/status", nil)
+	req := newLocalAPIRequest(http.MethodGet, "/api/sync/status", nil)
 	response := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(response, req)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())

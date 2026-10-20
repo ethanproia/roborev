@@ -54,9 +54,13 @@ func planFixAtRevision(ctx context.Context, cmd *cobra.Command, repoPath, ref st
 		return "", err
 	}
 	planCtx, cancelPlan := withAgentCallTimeout(ctx)
-	plan, planErr := agent.RunPlan(planCtx, a, repoPath, planningHead, planningPrompt, io.Discard, func(path, text string) (string, func(), error) {
+	plan, planErr := agent.RunPlan(planCtx, a, repoPath, planningHead, planningPrompt, io.Discard, func(ctx context.Context, path, text string) (context.Context, string, func(), error) {
 		prepared, err := prompt.NewBuilderWithConfig(nil, cfg).ForRepo(repoPath, 0).Prepare(text, prompt.SnapshotTarget{RepoPath: path, ConfigRepoPath: repoPath})
-		return prepared.Prompt, prepared.Cleanup, err
+		if err != nil {
+			return ctx, "", nil, err
+		}
+		ctx, text = agent.UseDaemonPromptSnapshot(ctx, a, prepared)
+		return ctx, text, prepared.Cleanup, nil
 	})
 	cancelPlan()
 	// Validate the caller even when planning fails: refine may retry the error.

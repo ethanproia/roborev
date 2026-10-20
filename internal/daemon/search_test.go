@@ -147,7 +147,7 @@ func newSearchHTTPServer(t *testing.T, search reviewSearcher) *Server {
 }
 
 func executeSearch(server *Server, values url.Values) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, "/api/search?"+values.Encode(), nil)
+	req := newLocalAPIRequest(http.MethodGet, "/api/search?"+values.Encode(), nil)
 	recorder := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(recorder, req)
 	return recorder

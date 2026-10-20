@@ -41,7 +41,7 @@ type listJobsResponse struct {
 // decodes the JSON body, and returns the parsed response.
 func fetchJobs(t *testing.T, server *Server, query string) listJobsResponse {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/api/jobs?"+query, nil)
+	req := newLocalAPIRequest(http.MethodGet, "/api/jobs?"+query, nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code, "GET /api/jobs?%s: %s", query, w.Body.String())
@@ -1648,7 +1648,7 @@ func TestHandleListJobsByID(t *testing.T) {
 
 	t.Run("fetches specific job by ID", func(t *testing.T) {
 		// Request job 1 specifically
-		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/jobs?id=%d", job1ID), nil)
+		req := newLocalAPIRequest(http.MethodGet, fmt.Sprintf("/api/jobs?id=%d", job1ID), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 
@@ -1678,7 +1678,7 @@ func TestHandleListJobsByID(t *testing.T) {
 
 	t.Run("fetches middle job correctly", func(t *testing.T) {
 		// Request job 2 specifically (the middle job)
-		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/jobs?id=%d", job2ID), nil)
+		req := newLocalAPIRequest(http.MethodGet, fmt.Sprintf("/api/jobs?id=%d", job2ID), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 
@@ -1707,7 +1707,7 @@ func TestHandleListJobsByID(t *testing.T) {
 
 	t.Run("returns empty for non-existent job ID", func(t *testing.T) {
 		// Request a job ID that doesn't exist
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs?id=99999", nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs?id=99999", nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 
@@ -1730,7 +1730,7 @@ func TestHandleListJobsByID(t *testing.T) {
 	})
 
 	t.Run("returns error for invalid job ID", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs?id=notanumber", nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs?id=notanumber", nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 
@@ -1741,7 +1741,7 @@ func TestHandleListJobsByID(t *testing.T) {
 
 	t.Run("without id param returns all jobs", func(t *testing.T) {
 		// Request without id param should return all jobs
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs", nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 
@@ -2367,7 +2367,7 @@ func TestHandleListJobsJobTypeFilter(t *testing.T) {
 	require.NoError(t, testutil.CompleteReviewFixture(db, fixJob.ID, "test", "prompt", "fix done"))
 
 	t.Run("job_type=fix returns only fix jobs", func(t *testing.T) {
-		req := httptest.NewRequest(
+		req := newLocalAPIRequest(
 			http.MethodGet, "/api/jobs?job_type=fix", nil,
 		)
 		w := httptest.NewRecorder()
@@ -2398,7 +2398,7 @@ func TestHandleListJobsJobTypeFilter(t *testing.T) {
 	})
 
 	t.Run("no job_type returns all jobs", func(t *testing.T) {
-		req := httptest.NewRequest(
+		req := newLocalAPIRequest(
 			http.MethodGet, "/api/jobs", nil,
 		)
 		w := httptest.NewRecorder()
@@ -2424,7 +2424,7 @@ func TestHandleListJobsJobTypeFilter(t *testing.T) {
 	})
 
 	t.Run("exclude_job_type=fix returns only non-fix jobs", func(t *testing.T) {
-		req := httptest.NewRequest(
+		req := newLocalAPIRequest(
 			http.MethodGet, "/api/jobs?exclude_job_type=fix", nil,
 		)
 		w := httptest.NewRecorder()
@@ -2482,7 +2482,7 @@ func TestHandleListJobsJobTypeFilter(t *testing.T) {
 		`, repo.ID, skippedCommit.ID)
 		require.NoError(t, err)
 
-		req := httptest.NewRequest(
+		req := newLocalAPIRequest(
 			http.MethodGet, "/api/jobs?hide_classify_jobs=true", nil,
 		)
 		w := httptest.NewRecorder()
@@ -2516,7 +2516,7 @@ func TestHandleListJobsRepoPrefixFilter(t *testing.T) {
 	seedRepoWithJobs(t, db, filepath.Join(tmpDir, "outside-repo"), 1, "outside")
 
 	t.Run("repo_prefix returns only child repos", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(workspace), nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(workspace), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 		testutil.AssertStatusCode(t, w, http.StatusOK)
@@ -2545,7 +2545,7 @@ func TestHandleListJobsRepoPrefixFilter(t *testing.T) {
 	t.Run("repo_prefix does not match parent directory itself", func(t *testing.T) {
 		// A repo AT the workspace path shouldn't match (must be a child)
 		seedRepoWithJobs(t, db, workspace, 1, "exact")
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(workspace), nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(workspace), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 		testutil.AssertStatusCode(t, w, http.StatusOK)
@@ -2565,7 +2565,7 @@ func TestHandleListJobsRepoPrefixFilter(t *testing.T) {
 
 	t.Run("repo param takes precedence over repo_prefix", func(t *testing.T) {
 		exactRepo := filepath.Join(workspace, "repo-a")
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs?repo="+url.QueryEscape(exactRepo)+"&repo_prefix="+url.QueryEscape(workspace), nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs?repo="+url.QueryEscape(exactRepo)+"&repo_prefix="+url.QueryEscape(workspace), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 		testutil.AssertStatusCode(t, w, http.StatusOK)
@@ -2583,7 +2583,7 @@ func TestHandleListJobsRepoPrefixFilter(t *testing.T) {
 	})
 
 	t.Run("repo_prefix trailing slash is normalized", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(workspace+"/"), nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(workspace+"/"), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 		testutil.AssertStatusCode(t, w, http.StatusOK)
@@ -2603,7 +2603,7 @@ func TestHandleListJobsRepoPrefixFilter(t *testing.T) {
 	t.Run("repo_prefix with dot-dot is normalized", func(t *testing.T) {
 		// workspace/../workspace should normalize to workspace
 		dotdotPrefix := workspace + "/../" + filepath.Base(workspace)
-		req := httptest.NewRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(dotdotPrefix), nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/jobs?repo_prefix="+url.QueryEscape(dotdotPrefix), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 		testutil.AssertStatusCode(t, w, http.StatusOK)
@@ -3007,7 +3007,7 @@ func TestHandleListJobsSlashNormalization(t *testing.T) {
 	seedRepoWithJobs(t, db, filepath.ToSlash(tmpDir)+"/other-c", 1, "sc")
 
 	t.Run("forward-slash prefix matches stored paths", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet,
+		req := newLocalAPIRequest(http.MethodGet,
 			"/api/jobs?repo_prefix="+url.QueryEscape(ws), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
@@ -3353,7 +3353,7 @@ func TestHandleListJobsByIDWithArchivedReview(t *testing.T) {
 	require.NoError(t, archiveErr)
 	_, err := db.GetReviewByJobID(job.ID)
 	require.ErrorIs(t, err, storage.ErrLegacyReviewMigration)
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/jobs?id=%d", job.ID), nil)
+	req := newLocalAPIRequest(http.MethodGet, fmt.Sprintf("/api/jobs?id=%d", job.ID), nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

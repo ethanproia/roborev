@@ -239,9 +239,14 @@ func (b *Builder) buildWithOpts(gitRef string, contextCount int, agentName, revi
 
 // SnapshotResult holds a prompt and cleanup for its temporary reference files.
 type SnapshotResult struct {
-	Prompt   string
-	FilePath string
-	Cleanup  func()
+	Prompt string
+	// FilePath is the prompt file Prepare wrote. SnapshotRoot is the
+	// snapshot directory that file must stay inside. Both are empty when
+	// the prompt is inline. Callers pass them out of band; nothing parses
+	// them back out of Prompt.
+	FilePath     string
+	SnapshotRoot string
+	Cleanup      func()
 	// PriorRangeReviewDir is the directory the builder wrote prior-range
 	// review files into. PriorRangeReviewRefs maps the exact text inserted
 	// into Prompt to the file path. Callers pass both to the cloud launcher.
@@ -442,6 +447,75 @@ func snapshotIsActive(dir string) bool {
 	snapshotLifecycleMu.Lock()
 	defer snapshotLifecycleMu.Unlock()
 	return isActiveSnapshotLocked(dir)
+}
+
+// ErrDaemonSnapshotRefused means a snapshot path is not a file this process
+// wrote inside the snapshot directory.
+var ErrDaemonSnapshotRefused = errors.New("prompt snapshot is not a file this daemon wrote inside the snapshot dir")
+
+// ReadDaemonPromptSnapshot returns the body of a prompt file Prepare wrote
+// in this process. root is the snapshot directory and path is the file.
+// Both are resolved with filepath.EvalSymlinks. A lexical ".." segment, a
+// path that resolves outside root, or a symlink that leaves root is refused
+// before the file is read.
+func ReadDaemonPromptSnapshot(root, path string) (string, error) {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" || !filepath.IsAbs(root) || !filepath.IsAbs(path) {
+		return "", ErrDaemonSnapshotRefused
+	}
+	if pathHasDotDot(root) || pathHasDotDot(path) {
+		return "", ErrDaemonSnapshotRefused
+	}
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(path)
+	lexical, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil || snapshotRelEscapes(lexical) {
+		return "", ErrDaemonSnapshotRefused
+	}
+	dir := filepath.Dir(cleanPath)
+	if !snapshotIsActive(dir) {
+		return "", ErrDaemonSnapshotRefused
+	}
+	marker, err := os.Lstat(filepath.Join(dir, snapshotMarkerFile))
+	if err != nil || !marker.Mode().IsRegular() {
+		return "", ErrDaemonSnapshotRefused
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		return "", ErrDaemonSnapshotRefused
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", ErrDaemonSnapshotRefused
+	}
+	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
+	if err != nil {
+		return "", ErrDaemonSnapshotRefused
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil || snapshotRelEscapes(rel) {
+		return "", ErrDaemonSnapshotRefused
+	}
+	if filepath.Dir(resolvedPath) != resolvedDir {
+		return "", ErrDaemonSnapshotRefused
+	}
+	body, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return "", ErrDaemonSnapshotRefused
+	}
+	return string(body), nil
+}
+
+func pathHasDotDot(path string) bool {
+	for _, part := range strings.Split(path, string(filepath.Separator)) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotRelEscapes(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == "." || filepath.IsAbs(rel)
 }
 
 func validateSnapshotRoot(repoPath, snapshotRoot string) error {

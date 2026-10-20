@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"go.kenn.io/roborev/internal/config"
@@ -25,13 +26,26 @@ func (b *Builder) Prepare(text string, target SnapshotTarget) (SnapshotResult, e
 	if err != nil {
 		return SnapshotResult{}, err
 	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return SnapshotResult{}, fmt.Errorf("resolve snapshot dir: %w", err)
+	}
 	file, cleanup, err := writeExternalSnapshot(repo, root, "prompt.md", text)
 	if err != nil {
 		return SnapshotResult{}, err
 	}
 	return SnapshotResult{
-		Prompt:   fmt.Sprintf("Read the complete task prompt from %q and carry out its instructions. Read the file in full before starting.\n", file),
-		FilePath: file,
-		Cleanup:  cleanup,
+		Prompt:       SnapshotHandoff(file),
+		FilePath:     file,
+		SnapshotRoot: root,
+		Cleanup:      cleanup,
 	}, nil
+}
+
+// SnapshotHandoff is the local-agent instruction Prepare stores when the
+// prompt does not fit inline. Cursor-cloud does not read a path out of this
+// text. It expands a snapshot only from the out-of-band SnapshotRoot and
+// FilePath on SnapshotResult.
+func SnapshotHandoff(path string) string {
+	return fmt.Sprintf("Read the complete task prompt from %q and carry out its instructions. Read the file in full before starting.\n", path)
 }

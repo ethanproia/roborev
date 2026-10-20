@@ -15,13 +15,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/git"
+	"go.kenn.io/roborev/internal/prompt"
 )
 
 const (
@@ -969,28 +969,74 @@ func priorRangeReviewAllowlistFrom(ctx context.Context) PriorRangeReviewAllowlis
 	return list
 }
 
-// cursorCloudLaunchPrompt is the text CreateAgent receives. A local snapshot
-// handoff is read and inlined. A path that cannot be read is refused before
-// any launch, so the remote agent never sees a local filesystem path.
-func cursorCloudLaunchPrompt(ctx context.Context, prompt string) (string, error) {
-	const prefix = "Read the complete task prompt from "
-	const suffix = " and carry out its instructions. Read the file in full before starting.\n"
-	if strings.HasPrefix(prompt, prefix) && strings.HasSuffix(prompt, suffix) {
-		quoted := strings.TrimSuffix(strings.TrimPrefix(prompt, prefix), suffix)
-		path, err := strconv.Unquote(quoted)
-		if err != nil || strings.TrimSpace(path) == "" {
-			return "", errors.New("cursor-cloud: refusing to launch because the prompt points at a local file")
-		}
-		body, err := os.ReadFile(path)
+// DaemonSnapshotPrompt is the only prompt text that cursor-cloud replaces
+// with a snapshot file. The path is never parsed from the prompt.
+const DaemonSnapshotPrompt = "roborev-daemon-snapshot\n"
+
+type daemonPromptSnapshotKey struct{}
+
+// DaemonPromptSnapshot is the prompt file Prepare wrote for this launch.
+// Root is the snapshot directory. Path is the file inside it.
+type DaemonPromptSnapshot struct {
+	Root string
+	Path string
+}
+
+// WithDaemonPromptSnapshot attaches Prepare's snapshot to ctx. The cloud
+// launcher reads that file only. It does not look for a path in the prompt.
+func WithDaemonPromptSnapshot(ctx context.Context, snap DaemonPromptSnapshot) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, daemonPromptSnapshotKey{}, snap)
+}
+
+func daemonPromptSnapshotFrom(ctx context.Context) DaemonPromptSnapshot {
+	if ctx == nil {
+		return DaemonPromptSnapshot{}
+	}
+	snap, _ := ctx.Value(daemonPromptSnapshotKey{}).(DaemonPromptSnapshot)
+	return snap
+}
+
+// UseDaemonPromptSnapshot points a cursor-cloud launch at Prepare's file and
+// returns the sentinel prompt. Every other agent keeps the handoff text and
+// does not receive a snapshot reference.
+func UseDaemonPromptSnapshot(ctx context.Context, a Agent, prepared prompt.SnapshotResult) (context.Context, string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if a == nil || a.Name() != CursorCloudHost || strings.TrimSpace(prepared.FilePath) == "" {
+		// A reused ctx must not keep an earlier launch's snapshot.
+		return context.WithValue(ctx, daemonPromptSnapshotKey{}, DaemonPromptSnapshot{}), prepared.Prompt
+	}
+	ctx = WithDaemonPromptSnapshot(ctx, DaemonPromptSnapshot{
+		Root: prepared.SnapshotRoot,
+		Path: prepared.FilePath,
+	})
+	return ctx, DaemonSnapshotPrompt
+}
+
+// cursorCloudLaunchPrompt is the text CreateAgent receives. A caller-supplied
+// prompt is returned unchanged, including one that only looks like a snapshot
+// handoff. A file is read only when ctx carries the snapshot Prepare wrote
+// for this launch and the prompt is DaemonSnapshotPrompt.
+func cursorCloudLaunchPrompt(ctx context.Context, promptText string) (string, error) {
+	snap := daemonPromptSnapshotFrom(ctx)
+	if snap.Path != "" || snap.Root != "" {
+		body, err := prompt.ReadDaemonPromptSnapshot(snap.Root, snap.Path)
 		if err != nil {
-			return "", fmt.Errorf("cursor-cloud: refusing to launch because the oversized prompt cannot be read: %w", err)
+			return "", errors.New("cursor-cloud: refusing to launch because the prompt snapshot is outside the snapshot dir or was not written by this daemon")
 		}
-		if strings.TrimSpace(string(body)) == "" {
+		if strings.TrimSpace(body) == "" {
 			return "", errors.New("cursor-cloud: refusing to launch because the oversized prompt is empty")
 		}
-		prompt = string(body)
+		if promptText != DaemonSnapshotPrompt {
+			return "", errors.New("cursor-cloud: refusing to launch because the prompt snapshot does not belong to this prompt")
+		}
+		promptText = body
 	}
-	return cursorCloudInlinePriorRangeReviews(prompt, priorRangeReviewAllowlistFrom(ctx))
+	return cursorCloudInlinePriorRangeReviews(promptText, priorRangeReviewAllowlistFrom(ctx))
 }
 
 // cursorCloudInlinePriorRangeReviews replaces builder-inserted prior-range

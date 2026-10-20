@@ -19,7 +19,7 @@ func requestActivity(server *Server, method, query string) *httptest.ResponseRec
 	if query != "" {
 		url += "?" + query
 	}
-	req := httptest.NewRequest(method, url, nil)
+	req := newLocalAPIRequest(method, url, nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 	return w

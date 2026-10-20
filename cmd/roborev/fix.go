@@ -1152,6 +1152,7 @@ func fixSingleJob(cmd *cobra.Command, repoRoot string, jobID int64, opts fixOpti
 		return err
 	}
 	implementationPrompt := buildGenericFixPromptWithMetadataForRef(review.Output, minSev, comments, metadata, fixCfg.FixGuidelines, reviewedRefForFix(job))
+	var preparedFix prompt.SnapshotResult
 	if opts.plan || opts.planOnly {
 		review.Job = job
 		builder := prompt.NewBuilderWithConfig(nil, fixCfg).ForRepo(repoRoot, 0)
@@ -1173,16 +1174,20 @@ func fixSingleJob(cmd *cobra.Command, repoRoot string, jobID int64, opts fixOpti
 		if opts.planOnly {
 			return nil
 		}
-		prepared, prepareErr := builder.Prepare(implementationPrompt, prompt.SnapshotTarget{})
+		var prepareErr error
+		preparedFix, prepareErr = builder.Prepare(implementationPrompt, prompt.SnapshotTarget{})
 		if prepareErr != nil {
 			return prepareErr
 		}
-		if prepared.Cleanup != nil {
-			defer prepared.Cleanup()
+		if preparedFix.Cleanup != nil {
+			defer preparedFix.Cleanup()
 		}
-		implementationPrompt = prepared.Prompt
+		implementationPrompt = preparedFix.Prompt
 	}
 	currentAgent, resuming := tracker.NextAgent()
+	if opts.plan {
+		ctx, implementationPrompt = agent.UseDaemonPromptSnapshot(ctx, currentAgent, preparedFix)
+	}
 
 	if !opts.quiet {
 		if resuming {
@@ -1525,6 +1530,7 @@ func processFixBatch(ctx context.Context, cmd *cobra.Command, roots currentRepoR
 		}
 
 		var cleanupPrompt func()
+		var preparedFix prompt.SnapshotResult
 		fixPrompt := buildBatchFixPromptWithMetadata(batch, minSev, metadata, cfg.FixGuidelines)
 		if opts.plan || opts.planOnly {
 			findings := batchPlanningContext(roots.worktreeRoot, batch)
@@ -1546,11 +1552,15 @@ func processFixBatch(ctx context.Context, cmd *cobra.Command, roots currentRepoR
 			if opts.planOnly {
 				continue
 			}
-			prepared, prepareErr := prompt.NewBuilderWithConfig(nil, cfg).ForRepo(roots.worktreeRoot, 0).Prepare(fixPrompt, prompt.SnapshotTarget{})
+			var prepareErr error
+			preparedFix, prepareErr = prompt.NewBuilderWithConfig(nil, cfg).ForRepo(roots.worktreeRoot, 0).Prepare(fixPrompt, prompt.SnapshotTarget{})
 			if prepareErr != nil {
 				return prepareErr
 			}
-			fixPrompt, cleanupPrompt = prepared.Prompt, prepared.Cleanup
+			fixPrompt, cleanupPrompt = preparedFix.Prompt, preparedFix.Cleanup
+		}
+		if opts.plan {
+			ctx, fixPrompt = agent.UseDaemonPromptSnapshot(ctx, currentAgent, preparedFix)
 		}
 
 		if !opts.quiet {

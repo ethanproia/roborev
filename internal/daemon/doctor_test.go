@@ -32,7 +32,7 @@ func TestDoctorAgentsReportsDaemonView(t *testing.T) {
 	server, _, _ := newTestServer(t)
 	get := func(repo string, agents ...string) (int, DoctorAgentsOutput) {
 		query := url.Values{"repo": {repo}, "agent": agents}
-		req := httptest.NewRequest(http.MethodGet, "/api/doctor/agents?"+query.Encode(), nil)
+		req := newLocalAPIRequest(http.MethodGet, "/api/doctor/agents?"+query.Encode(), nil)
 		w := httptest.NewRecorder()
 		server.httpServer.Handler.ServeHTTP(w, req)
 		var out DoctorAgentsOutput

@@ -97,6 +97,7 @@ func RunSynthesisAgent(
 		defer prepared.Cleanup()
 	}
 	prompt = prepared.Prompt
+	ctx, prompt = agent.UseDaemonPromptSnapshot(ctx, a, prepared)
 
 	invoke()
 	output, err := invokeReview(ctx, a, checkout.RepoPath, checkout.GitRef, prompt, SynthesisSchema, out)

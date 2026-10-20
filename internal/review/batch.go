@@ -222,6 +222,7 @@ func runSingle(
 		Dir:  snapResult.PriorRangeReviewDir,
 		Refs: snapResult.PriorRangeReviewRefs,
 	})
+	ctx, reviewPrompt = agent.UseDaemonPromptSnapshot(ctx, resolvedAgent, snapResult)
 
 	// Run review
 	log.Printf(

@@ -592,20 +592,20 @@ func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, di
 		WithRepoConfig(repoCfg, "").
 		WithKataClient(kata.NewCLIClient(repoPath)).
 		WithStructuredOutput(true)
-	var reviewPrompt string
 	var snapshotCleanup func()
 	var priorRangeDir string
 	var priorRangeRefs map[string]string
+	var prepared prompt.SnapshotResult
 	if diffContent != "" || len(dirtyFiles) > 0 {
 		// Dirty review
 		dirtyResult, dirtyErr := pb.BuildDirtyWithSnapshotAndFiles(diffContent, dirtyFiles, cfg.ReviewContextCount, a.Name(), reviewType, resolvedMinSev)
-		reviewPrompt = dirtyResult.Prompt
+		prepared = dirtyResult
 		snapshotCleanup = dirtyResult.Cleanup
 		err = dirtyErr
 	} else {
 		excludes := config.ResolveExcludePatterns(ctx, repoPath, cfg, reviewType)
 		result, buildErr := pb.BuildWithSnapshot(gitRef, cfg.ReviewContextCount, a.Name(), reviewType, resolvedMinSev, excludes)
-		reviewPrompt = result.Prompt
+		prepared = result
 		snapshotCleanup = result.Cleanup
 		priorRangeDir = result.PriorRangeReviewDir
 		priorRangeRefs = result.PriorRangeReviewRefs
@@ -618,11 +618,14 @@ func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, di
 		return fmt.Errorf("build prompt: %w", err)
 	}
 
-	_, err = reviewpkg.RunAgentReview(
+	launchCtx, launchPrompt := agent.UseDaemonPromptSnapshot(
 		agent.WithPriorRangeReviewAllowlist(cmd.Context(), agent.PriorRangeReviewAllowlist{
 			Dir:  priorRangeDir,
 			Refs: priorRangeRefs,
-		}), a, repoPath, gitRef, reviewPrompt, reviewType,
+		}), a, prepared,
+	)
+	_, err = reviewpkg.RunAgentReview(
+		launchCtx, a, repoPath, gitRef, launchPrompt, reviewType,
 		resolvedMinSev, out,
 	)
 	if err != nil {

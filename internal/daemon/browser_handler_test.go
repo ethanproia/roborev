@@ -193,7 +193,7 @@ func browserRequest(method, path string, body any) *http.Request {
 	if body != nil {
 		data, _ = json.Marshal(body)
 	}
-	request := httptest.NewRequest(method, "http://127.0.0.1:7374"+path, bytes.NewReader(data))
+	request := newLocalAPIRequest(method, "http://127.0.0.1:7374"+path, bytes.NewReader(data))
 	request.Host = "127.0.0.1:7374"
 	request.RemoteAddr = "127.0.0.1:50000"
 	request.Header.Set("Origin", "http://127.0.0.1:7374")
@@ -1095,7 +1095,7 @@ func TestBrowserSessionRoutesAppearOnlyInCombinedOpenAPI(t *testing.T) {
 	server := &Server{}
 	mux := http.NewServeMux()
 	server.registerHumaAPI(mux)
-	request := httptest.NewRequest(http.MethodPost, "/api/ui/session/login", nil)
+	request := newLocalAPIRequest(http.MethodPost, "/api/ui/session/login", nil)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, request)
 	assert.Equal(t, http.StatusNotFound, recorder.Code)

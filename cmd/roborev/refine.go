@@ -670,8 +670,10 @@ func runRefine(runCtx RunContext, opts refineOptions) error {
 		}
 
 		var cleanupPrompt func()
+		var prepared prompt.SnapshotResult
 		if opts.plan {
-			prepared, prepareErr := builder.Prepare(addressPrompt, prompt.SnapshotTarget{RepoPath: worktreePath, ConfigRepoPath: repoPath})
+			var prepareErr error
+			prepared, prepareErr = builder.Prepare(addressPrompt, prompt.SnapshotTarget{RepoPath: worktreePath, ConfigRepoPath: repoPath})
 			if prepareErr != nil {
 				_ = wt.Close(ctx)
 				return prepareErr
@@ -699,6 +701,9 @@ func runRefine(runCtx RunContext, opts refineOptions) error {
 			timer.startLive(fmt.Sprintf("Addressing review (job %d)...", currentFailedReview.JobID))
 		}
 		fixCtx, fixCancel := withAgentCallTimeout(ctx)
+		if opts.plan {
+			fixCtx, addressPrompt = agent.UseDaemonPromptSnapshot(fixCtx, addressAgent, prepared)
+		}
 		output, agentErr := addressAgent.Review(fixCtx, worktreePath, "HEAD", addressPrompt, agentOutput)
 		fixCancel()
 		if cleanupPrompt != nil {

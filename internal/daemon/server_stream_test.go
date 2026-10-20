@@ -23,7 +23,7 @@ func startStreamHandler(t *testing.T, server *Server, url string) (context.Cance
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	req := httptest.NewRequest(http.MethodGet, url, nil).WithContext(ctx)
+	req := newLocalAPIRequest(http.MethodGet, url, nil).WithContext(ctx)
 	w := newSafeRecorder()
 
 	initialCount := server.broadcaster.SubscriberCount()
@@ -84,7 +84,7 @@ func TestHandleStreamEvents(t *testing.T) {
 
 	t.Run("wrong method fails", func(t *testing.T) {
 		server, _, _ := newTestServer(t)
-		req := httptest.NewRequest(http.MethodPost, "/api/stream/events", nil)
+		req := newLocalAPIRequest(http.MethodPost, "/api/stream/events", nil)
 		w := httptest.NewRecorder()
 
 		server.httpServer.Handler.ServeHTTP(w, req)

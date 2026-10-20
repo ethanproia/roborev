@@ -24,15 +24,17 @@ func (wp *WorkerPool) prepareFixPlan(ctx context.Context, planningTimeout time.D
 		planCtx, cancel = context.WithTimeout(ctx, planningTimeout)
 		defer cancel()
 	}
-	plan, err := agent.RunPlan(planCtx, a, repoPath, "HEAD", planningPrompt, output, func(path, text string) (string, func(), error) {
+	plan, err := agent.RunPlan(planCtx, a, repoPath, "HEAD", planningPrompt, output, func(ctx context.Context, path, text string) (context.Context, string, func(), error) {
 		prepared, err := builder.Prepare(text, prompt.SnapshotTarget{RepoPath: path, ConfigRepoPath: configRepoPath})
-		if err == nil {
-			wp.markAgentInvokedWithCommandLine(workerID, job, agent.CommandLineForPlanning(a))
-			if onInvoked != nil {
-				onInvoked()
-			}
+		if err != nil {
+			return ctx, "", nil, err
 		}
-		return prepared.Prompt, prepared.Cleanup, err
+		wp.markAgentInvokedWithCommandLine(workerID, job, agent.CommandLineForPlanning(a))
+		if onInvoked != nil {
+			onInvoked()
+		}
+		ctx, text = agent.UseDaemonPromptSnapshot(ctx, a, prepared)
+		return ctx, text, prepared.Cleanup, nil
 	})
 	if err != nil {
 		return "", "", err

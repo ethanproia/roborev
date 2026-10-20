@@ -91,7 +91,7 @@ func TestDeterministicEmbeddingServerStopsBlockedRequestOnCancellation(t *testin
 	fake.blockModel = "cancel-model"
 	body := strings.NewReader(`{"model":"cancel-model","input":["document"],"input_type":"document"}`)
 	ctx, cancel := context.WithCancel(t.Context())
-	request := httptest.NewRequest(http.MethodPost, "/embeddings", body).WithContext(ctx)
+	request := newLocalAPIRequest(http.MethodPost, "/embeddings", body).WithContext(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

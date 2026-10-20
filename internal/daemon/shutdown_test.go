@@ -26,7 +26,7 @@ func TestShutdownEndpointSignalsGracefulShutdown(t *testing.T) {
 	default:
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/shutdown", nil)
+	req := newLocalAPIRequest(http.MethodPost, "/api/shutdown", nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 
@@ -46,14 +46,14 @@ func TestShutdownEndpointSignalsGracefulShutdown(t *testing.T) {
 
 	// A second request must not panic (close-once semantics).
 	w = httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/shutdown", nil))
+	server.httpServer.Handler.ServeHTTP(w, newLocalAPIRequest(http.MethodPost, "/api/shutdown", nil))
 	assert.Equal(http.StatusOK, w.Code)
 }
 
 func TestShutdownEndpointRejectsGet(t *testing.T) {
 	server := setupTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/shutdown", nil)
+	req := newLocalAPIRequest(http.MethodGet, "/api/shutdown", nil)
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(w, req)
 
@@ -74,7 +74,7 @@ func TestShutdownBlocksClaimsWithoutChangingQueuePause(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(
-		w, httptest.NewRequest(http.MethodPost, "/api/shutdown", nil),
+		w, newLocalAPIRequest(http.MethodPost, "/api/shutdown", nil),
 	)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	draining, err := server.db.IsShutdownDraining()
@@ -95,13 +95,13 @@ func TestShutdownRejectsQueueMutationsWhileDraining(t *testing.T) {
 
 	shutdown := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(
-		shutdown, httptest.NewRequest(http.MethodPost, "/api/shutdown", nil),
+		shutdown, newLocalAPIRequest(http.MethodPost, "/api/shutdown", nil),
 	)
 	require.Equal(t, http.StatusOK, shutdown.Code, shutdown.Body.String())
 
 	unpause := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(
-		unpause, httptest.NewRequest(http.MethodPost, "/api/queue/unpause", nil),
+		unpause, newLocalAPIRequest(http.MethodPost, "/api/queue/unpause", nil),
 	)
 	assert.Equal(t, http.StatusConflict, unpause.Code)
 	draining, err := server.db.IsShutdownDraining()
