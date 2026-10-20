@@ -1052,6 +1052,27 @@ func cursorCloudAgeLaunch(t *testing.T, db *storage.DB, jobID int64) {
 	require.NoError(t, err)
 }
 
+func TestRecoverCloudLaunchLogsLeakedAgentAfterJobDelete(t *testing.T) {
+	tc := newWorkerTestContext(t, 1)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	require.NoError(t, tc.DB.BeginCloudLaunch(job.ID, testWorkerID, "leak-tok", cursorCloudRestartRepo))
+	require.NoError(t, tc.DB.AttachCloudAgent(job.ID, "leak-tok", "bc_leaked"))
+	conn, err := tc.DB.Conn(t.Context())
+	require.NoError(t, err)
+	defer conn.Close()
+	_, err = conn.ExecContext(t.Context(), `PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(t.Context(), `DELETE FROM review_jobs WHERE id = ?`, job.ID)
+	require.NoError(t, err)
+
+	logs := cursorCloudCaptureLog(t)
+	err = recoverCloudLaunches(context.Background(), tc.DB, nil)
+	require.Error(t, err)
+	assert.Contains(t, logs.String(), "bc_leaked")
+	assert.Contains(t, logs.String(), storage.CloudLaunchPendingNote)
+}
+
 func cursorCloudCaptureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logs bytes.Buffer

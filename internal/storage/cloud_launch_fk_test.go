@@ -88,8 +88,11 @@ func assertLaunchKept(t *testing.T, db *DB, row cascadeLaunch) {
 	assert.Equal(t, row.note, note)
 	var ddl string
 	require.NoError(t, db.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'review_job_cloud_launches'`).Scan(&ddl))
-	assert.NotContains(t, ddl, "REFERENCES")
-	assert.NotContains(t, ddl, "ON DELETE CASCADE")
+	require.NotContains(t, ddl, "REFERENCES")
+	require.NotContains(t, ddl, "ON DELETE CASCADE")
+	var fks int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_list('review_job_cloud_launches')`).Scan(&fks))
+	require.Equal(t, 0, fks)
 }
 
 func setDBForeignKeys(t *testing.T, db *DB, on bool) {

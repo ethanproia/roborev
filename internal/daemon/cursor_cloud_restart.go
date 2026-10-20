@@ -40,6 +40,13 @@ func recoverCloudLaunches(ctx context.Context, db *storage.DB, client cursorclou
 	if err != nil || len(rows) == 0 {
 		return err
 	}
+	// A deleted job or repo is absent from the job status list. The sweep
+	// still has the launch row; name the leaked agent before cleanup.
+	for _, row := range rows {
+		if row.RepoPath == "" && row.OrphanNote != "" {
+			log.Printf("cursor-cloud: uncleaned launch agent %s: %s", row.AgentID, row.OrphanNote)
+		}
+	}
 	if client == nil {
 		return fmt.Errorf("cursor-cloud: %d interrupted launch(es) have no client", len(rows))
 	}

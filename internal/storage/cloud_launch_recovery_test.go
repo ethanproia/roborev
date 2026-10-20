@@ -19,6 +19,7 @@ func TestListUncleanedCloudLaunchKeepsDeletedJob(t *testing.T) {
 	const token = "deleted-job-tok"
 	const repoURL = "https://example.com/acme/old.git"
 	require.NoError(t, db.BeginCloudLaunch(job.ID, "w", token, repoURL))
+	require.NoError(t, db.AttachCloudAgent(job.ID, token, "bc_leaked"))
 	require.NoError(t, deleteReviewJob(t, db, job.ID))
 
 	rows, err := db.ListUncleanedCloudLaunches()
@@ -26,7 +27,30 @@ func TestListUncleanedCloudLaunchKeepsDeletedJob(t *testing.T) {
 	row, ok := cloudLaunchByToken(rows, token)
 	require.True(t, ok)
 	assert.Equal(t, token, row.Token)
+	assert.Equal(t, "bc_leaked", row.AgentID)
+	assert.Equal(t, CloudLaunchPendingNote, row.OrphanNote)
 	assert.Equal(t, repoURL, row.RepoIdentity)
+	assert.Empty(t, row.RepoPath)
+}
+
+func TestListUncleanedCloudLaunchShowsOrphanAfterRepoDelete(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	repo, _, job := createJobChain(t, db, "/tmp/launch-repo-deleted", "abc123")
+	_, err := db.Exec(`UPDATE review_jobs SET status = 'running', worker_id = 'w' WHERE id = ?`, job.ID)
+	require.NoError(t, err)
+	const token = "repo-deleted-tok"
+	require.NoError(t, db.BeginCloudLaunch(job.ID, "w", token, "https://example.com/acme/old.git"))
+	require.NoError(t, db.AttachCloudAgent(job.ID, token, "bc_leaked"))
+	require.NoError(t, db.DeleteRepo(repo.ID, true))
+
+	rows, err := db.ListUncleanedCloudLaunches()
+	require.NoError(t, err)
+	row, ok := cloudLaunchByToken(rows, token)
+	require.True(t, ok)
+	assert.Equal(t, "bc_leaked", row.AgentID)
+	assert.Equal(t, CloudLaunchPendingNote, row.OrphanNote)
 	assert.Empty(t, row.RepoPath)
 }
 
