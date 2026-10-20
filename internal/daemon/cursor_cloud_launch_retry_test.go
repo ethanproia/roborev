@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/roborev/internal/agent"
+	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/storage"
 )
@@ -153,7 +155,7 @@ func TestCursorCloudCapRefusalDoesNotRetryJob(t *testing.T) {
 	err := reviewOn(t, cloud)
 	require.Error(t, err)
 	assert.Equal(t, held, posts.Load(), "a refused launch must not POST")
-	assert.ErrorIs(t, err, agent.ErrCursorCloudNonRetryable)
+	require.ErrorIs(t, err, agent.ErrCursorCloudNonRetryable)
 	assertLaunchNotRetried(t, err)
 	release()
 	<-done
@@ -211,6 +213,54 @@ func TestDeadlineExceededStillRetriesOtherAgents(t *testing.T) {
 	assert.Equal(t, 1, retryCount)
 }
 
+func TestCursorCloudDoesNotFailOverToLocalAgent(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.DefaultBackupAgent = "test"
+	pool := NewWorkerPool(nil, NewStaticConfig(cfg), 1, NewBroadcaster(), nil, nil)
+	job := &storage.ReviewJob{
+		Agent:       agent.CursorCloudHost,
+		BackupAgent: "test",
+		RepoPath:    t.TempDir(),
+	}
+	assert.Empty(t, pool.resolveBackupAgent(job))
+
+	tc := newWorkerTestContext(t, 1)
+	claimed := tc.createAndClaimJobWithAgent(t, "cursor-cloud-failover", testWorkerID, agent.CursorCloudHost)
+	claimed.RepoPath = tc.TmpDir
+	claimed.BackupAgent = "test"
+	_, err := tc.DB.Exec(`UPDATE review_jobs SET backup_agent = ? WHERE id = ?`, "test", claimed.ID)
+	require.NoError(t, err)
+
+	hidden := hiddenCursorCloudErr{error: agent.ErrCursorCloudNonRetryable}
+	require.ErrorIs(t, hidden, agent.ErrCursorCloudNonRetryable)
+	assert.NotContains(t, hidden.Error(), agent.ErrCursorCloudNonRetryable.Error())
+	tc.Pool.finishAgentError(context.Background(), testWorkerID, claimed, agent.CursorCloudHost, hidden, time.Minute)
+	failed := tc.assertJobStatus(t, claimed.ID, storage.JobStatusFailed)
+	assert.Equal(t, agent.CursorCloudHost, failed.Agent)
+	retryCount, retryErr := tc.DB.GetJobRetryCount(claimed.ID)
+	require.NoError(t, retryErr)
+	assert.Zero(t, retryCount)
+
+	textual := errors.New(agent.ErrCursorCloudNonRetryable.Error() + ": status 500")
+	require.NotErrorIs(t, textual, agent.ErrCursorCloudNonRetryable)
+	other := tc.createAndClaimJobWithAgent(t, "cursor-cloud-text", testWorkerID, agent.CursorCloudHost)
+	other.RepoPath = tc.TmpDir
+	tc.Pool.finishAgentError(context.Background(), testWorkerID, other, agent.CursorCloudHost, textual, time.Minute)
+	retried := tc.assertJobStatus(t, other.ID, storage.JobStatusQueued)
+	assert.Equal(t, agent.CursorCloudHost, retried.Agent)
+	textRetries, textErr := tc.DB.GetJobRetryCount(other.ID)
+	require.NoError(t, textErr)
+	assert.Equal(t, 1, textRetries)
+}
+
+// hiddenCursorCloudErr unwraps to the launch sentinel without putting that
+// sentinel's text in Error. Matching it requires errors.Is.
+type hiddenCursorCloudErr struct{ error }
+
+func (e hiddenCursorCloudErr) Error() string { return "provider refused" }
+
+func (e hiddenCursorCloudErr) Unwrap() error { return e.error }
+
 func TestCursorCloudLaunchDialErrorMayRetry(t *testing.T) {
 	err := reviewCursorCloud(t, "http://127.0.0.1:1", nil)
 	require.Error(t, err)
@@ -244,7 +294,7 @@ func reviewCursorCloud(t *testing.T, base string, hc *http.Client) error {
 
 func assertLaunchNotRetried(t *testing.T, launchErr error) {
 	t.Helper()
-	assert.ErrorIs(t, launchErr, agent.ErrCursorCloudNonRetryable)
+	require.ErrorIs(t, launchErr, agent.ErrCursorCloudNonRetryable)
 	tc := newWorkerTestContext(t, 1)
 	job := tc.createAndClaimJobWithAgent(t, "cursor-cloud-launch", testWorkerID, agent.CursorCloudHost)
 	job.RepoPath = tc.TmpDir

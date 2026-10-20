@@ -3220,6 +3220,7 @@ func TestCIMatrixCursorCloudLaunchesOneAgent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, members, 1)
 	assert.Equal(t, "cursor-cloud", members[0].Agent)
+	assert.Empty(t, members[0].ReviewType)
 }
 
 func TestCICursorCloudMemberLaunchesAtHead(t *testing.T) {
@@ -3250,6 +3251,7 @@ func TestCICursorCloudMemberLaunchesAtHead(t *testing.T) {
 	require.Len(t, members, 1)
 	assert := assert.New(t)
 	assert.Equal(agent.CursorCloudHost, members[0].Agent)
+	assert.Empty(members[0].ReviewType)
 	assert.Equal(head, members[0].GitRef)
 	assert.NotContains(members[0].GitRef, "..")
 	assert.Equal(storage.JobTypeRange, members[0].JobType)

@@ -21,6 +21,26 @@ func TestDefaultResponseHeaderTimeout(t *testing.T) {
 	assert.Equal(t, defaultResponseHeaderTimeout, tr.ResponseHeaderTimeout)
 }
 
+func TestErrorBodyRedactsSecretThatStraddlesTruncation(t *testing.T) {
+	const secret = "CURSOR_SECRET_STRADDLE_KEY"
+	kept := secret[:8]
+	body := strings.Repeat("a", maxErrorMessageBytes-len(kept)) + secret + "tail"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	client := NewHTTPClient(secret, WithBaseURL(srv.URL))
+	_, err := client.GetAgent(context.Background(), "bc_1")
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.LessOrEqual(t, len(apiErr.Message), maxErrorMessageBytes)
+	assert.NotContains(t, apiErr.Message, secret)
+	assert.NotContains(t, apiErr.Message, kept)
+	assert.NotContains(t, err.Error(), secret)
+	assert.NotContains(t, err.Error(), kept)
+}
+
 func TestErrorBodyIsTruncated(t *testing.T) {
 	body := strings.Repeat("x", maxErrorMessageBytes+50)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

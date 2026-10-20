@@ -42,12 +42,12 @@ The first available agent is used unless you specify one explicitly.
 
 ## Cursor cloud host
 
-`cursor-cloud` is an opt-in review host, not one of the auto-detected CLIs. It
-stays off unless `--host cursor-cloud`, `host = "cursor-cloud"`, or
-`ROBOREV_DEFAULT_HOST=cursor-cloud` selects it. `CURSOR_API_KEY` alone does not.
-Defaults are unchanged. See
-[Configuration](../configuration.md#cursor-cloud-host) for how to enable it and
-for the sandbox limitation.
+`cursor-cloud` is an opt-in review host, not one of the auto-detected CLIs.
+It stays off unless `--host cursor-cloud`, `host = "cursor-cloud"`, or
+`ROBOREV_DEFAULT_HOST=cursor-cloud` selects it. `CURSOR_API_KEY` alone does
+not. Defaults are unchanged. See
+[Configuration](../configuration.md#cursor-cloud-host) for how to enable it
+and for the sandbox limitation.
 
 ## Specifying an Agent
 
