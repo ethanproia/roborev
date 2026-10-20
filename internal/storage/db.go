@@ -2436,17 +2436,10 @@ func (db *DB) ResetStaleJobs() error {
 	// already stored on the job error has to stay.
 	if _, err := db.Exec(`
 		UPDATE review_jobs
-		SET status = 'failed', worker_id = NULL, finished_at = ?,
-		    error = CASE
-		        WHEN instr(COALESCE(error, ''), 'orphan risk') > 0
-		             AND instr(COALESCE(error, ''), ?) > 0 THEN error
-		        WHEN instr(COALESCE(error, ''), 'orphan risk') > 0
-		             THEN TRIM(error || ' ' || ?)
-		        ELSE ?
-		    END,
+		SET status = 'failed', worker_id = NULL, finished_at = ?, error = `+jobErrorKeepNote("?")+`,
 		    updated_at = ?, synced_at = NULL
 		WHERE status = 'running' AND (`+currentAttemptCloudLaunchSQL()+`)
-	`, now, CloudLaunchInterruptedError, CloudLaunchInterruptedError, CloudLaunchInterruptedError, now); err != nil {
+	`, now, CloudLaunchInterruptedError, now); err != nil {
 		return err
 	}
 	_, err := db.Exec(`
