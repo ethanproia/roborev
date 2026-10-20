@@ -54,7 +54,7 @@ func (db *DB) BeginCloudLaunch(jobID int64, workerID, token, repoURL string) err
 	}
 	// The note is written before the caller may POST. A failed write removes the
 	// new row and returns, so the POST does not run.
-	if err := db.NoteLaunchOrphanRisk(token, CloudLaunchPendingNote); err != nil {
+	if err := db.NoteLaunchOrphanRisk(jobID, token, CloudLaunchPendingNote); err != nil {
 		_, _ = db.Exec(`DELETE FROM review_job_cloud_launches WHERE job_id = ? AND launch_token = ? AND orphan_note = ''`, jobID, token)
 		return err
 	}
@@ -176,17 +176,18 @@ func (db *DB) CountUncleanedCloudLaunches(jobID int64) (int, error) {
 	return n, err
 }
 
-// NoteLaunchOrphanRisk fills an empty orphan_note. It does not change a note
-// that is already set. A write that updates zero rows returns an error,
+// NoteLaunchOrphanRisk fills an empty orphan_note on this job. It does not
+// change a note that is already set, and it does not write a row that only
+// shares the token. A write that updates zero rows returns an error,
 // including when the token is missing or the note was already recorded.
-func (db *DB) NoteLaunchOrphanRisk(token, msg string) error {
+func (db *DB) NoteLaunchOrphanRisk(jobID int64, token, msg string) error {
 	token = strings.TrimSpace(token)
 	msg = strings.TrimSpace(msg)
 	if token == "" || msg == "" {
 		return fmt.Errorf("cursor-cloud: launch note was not recorded")
 	}
 	res, err := db.Exec(`UPDATE review_job_cloud_launches SET orphan_note = ?
-		WHERE launch_token = ? AND cleaned = 0 AND orphan_note = ''`, msg, token)
+		WHERE job_id = ? AND launch_token = ? AND cleaned = 0 AND orphan_note = ''`, msg, jobID, token)
 	if err != nil {
 		return err
 	}

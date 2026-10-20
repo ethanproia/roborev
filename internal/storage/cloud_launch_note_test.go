@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"uuid"
@@ -21,10 +22,10 @@ func TestMarkerWriteZeroRowsReturnsError(t *testing.T) {
 		(job_id, launch_token, cleaned, orphan_note) VALUES (?, 'cleaned-tok', 1, '')`, job.ID)
 	require.NoError(t, err)
 
-	err = db.NoteLaunchOrphanRisk("missing-tok", CloudLaunchPendingNote)
+	err = db.NoteLaunchOrphanRisk(job.ID, "missing-tok", CloudLaunchPendingNote)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not recorded")
-	err = db.NoteLaunchOrphanRisk("cleaned-tok", CloudLaunchPendingNote)
+	err = db.NoteLaunchOrphanRisk(job.ID, "cleaned-tok", CloudLaunchPendingNote)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not recorded")
 	var note string
@@ -37,11 +38,11 @@ func TestNoteLaunchOrphanRiskZeroRowsErrors(t *testing.T) {
 	db := openTestDB(t)
 	t.Cleanup(func() { db.Close() })
 
-	err := db.NoteLaunchOrphanRisk("missing-token", CloudLaunchPendingNote)
+	err := db.NoteLaunchOrphanRisk(1, "missing-token", CloudLaunchPendingNote)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not recorded")
-	require.Error(t, db.NoteLaunchOrphanRisk("", CloudLaunchPendingNote))
-	require.Error(t, db.NoteLaunchOrphanRisk("tok", " "))
+	require.Error(t, db.NoteLaunchOrphanRisk(1, "", CloudLaunchPendingNote))
+	require.Error(t, db.NoteLaunchOrphanRisk(1, "tok", " "))
 }
 
 func TestNoteLaunchOrphanRiskDoesNotReplaceSetNote(t *testing.T) {
@@ -53,7 +54,7 @@ func TestNoteLaunchOrphanRiskDoesNotReplaceSetNote(t *testing.T) {
 		(job_id, launch_token, orphan_note) VALUES (?, 'keep-tok', 'cursor-cloud orphan risk: first')`, job.ID)
 	require.NoError(t, err)
 
-	err = db.NoteLaunchOrphanRisk("keep-tok", "cursor-cloud orphan risk: second")
+	err = db.NoteLaunchOrphanRisk(job.ID, "keep-tok", "cursor-cloud orphan risk: second")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not recorded")
 	var note string
@@ -65,6 +66,40 @@ func TestNoteLaunchOrphanRiskDoesNotReplaceSetNote(t *testing.T) {
 	require.NoError(t, db.MarkCloudLaunchCleaned(id))
 	require.NoError(t, db.QueryRow(`SELECT orphan_note FROM review_job_cloud_launches WHERE id = ?`, id).Scan(&note))
 	assert.Empty(t, note)
+}
+
+// TestNoteLaunchOrphanRiskLeavesOtherJob is the token-only pin. The same
+// token on another job stays unmarked. Dropping the job_id predicate notes
+// both rows and fails this test.
+func TestNoteLaunchOrphanRiskLeavesOtherJob(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	t.Cleanup(func() { db.Close() })
+	_, err := db.Exec(`DROP INDEX IF EXISTS idx_review_job_cloud_launches_token`)
+	require.NoError(t, err)
+	root := t.TempDir()
+	_, _, jobA := createJobChain(t, db, filepath.Join(root, "a"), "note-a")
+	_, _, jobB := createJobChain(t, db, filepath.Join(root, "b"), "note-b")
+	const token = "shared-note-tok"
+	for _, jobID := range []int64{jobA.ID, jobB.ID} {
+		_, err := db.Exec(`INSERT INTO review_job_cloud_launches
+			(job_id, launch_token) VALUES (?, ?)`, jobID, token)
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, db.NoteLaunchOrphanRisk(jobA.ID, token, CloudLaunchPendingNote))
+
+	note := func(jobID int64) string {
+		t.Helper()
+		var got string
+		require.NoError(t, db.QueryRow(
+			`SELECT orphan_note FROM review_job_cloud_launches WHERE job_id = ? AND launch_token = ?`,
+			jobID, token,
+		).Scan(&got))
+		return got
+	}
+	assert.Equal(t, CloudLaunchPendingNote, note(jobA.ID))
+	assert.Empty(t, note(jobB.ID))
 }
 
 func TestMarkCloudLaunchCleanedByTokenClearsOrphanNote(t *testing.T) {
