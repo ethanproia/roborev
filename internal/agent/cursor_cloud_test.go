@@ -877,6 +877,11 @@ func TestCursorCloudBindRefusesUnusableRepo(t *testing.T) {
 				assert.Equal(t, 0, binds)
 				if shape.producer {
 					assert.Contains(t, err.Error(), "refusing to bind launch")
+					// A credentialed host with no path strips to the bare host.
+					// The refusal must not quote the secret.
+					if strings.Contains(shape.raw, "user:tok@") && !strings.Contains(shape.stored, "tok") {
+						assert.NotContains(t, err.Error(), "tok")
+					}
 				}
 				return
 			}
@@ -912,6 +917,33 @@ func TestCursorCloudBindRefusalRefundsHourlySlot(t *testing.T) {
 	assert.Equal(t, 0, createCount(fake))
 
 	a.RepoURL = accepted
+	_, err = a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, createCount(fake))
+}
+
+// TestCursorCloudBindErrorRefundsHourlySlot is a BindLaunch refusal after the
+// URL is accepted. The POST was not sent, so the hourly charge is refunded.
+// A second launch still creates. Dropping that refund spends the one slot and
+// the second create does not run.
+func TestCursorCloudBindErrorRefundsHourlySlot(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	const repo = "https://example.com/acme/repo.git"
+	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
+	a := &CursorCloudAgent{
+		Client:  fake,
+		RepoURL: repo,
+		BindLaunch: func(string, string) error {
+			return errors.New("bind refused")
+		},
+	}
+	a.SetLaunchLimitsForTest(2, 1)
+	_, err := a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "bind refused")
+	assert.Equal(t, 0, createCount(fake))
+
+	a.BindLaunch = nil
 	_, err = a.Review(context.Background(), t.TempDir(), sha, "prompt", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, createCount(fake))
@@ -983,6 +1015,12 @@ func cloudLaunchShapes(t *testing.T) []cloudLaunchShape {
 			identityS = config.RemoteIdentity(stored)
 		}
 		key := stored + "\x00" + identityS
+		// https://user:tok@github.com strips to the same stored URL and empty
+		// identity as https://github.com. Keep the raw URL so the bind refusal
+		// still runs that credentialed host-only cell.
+		if producer && identityS == "" && raw != stored && strings.Contains(raw, "user:tok@") {
+			key = "raw\x00" + raw
+		}
 		if seen[key] {
 			continue
 		}
@@ -1003,6 +1041,16 @@ func cloudLaunchShapes(t *testing.T) []cloudLaunchShape {
 	}
 	require.NotZero(t, mismatches)
 	require.NotZero(t, accepted)
+	var credentialedHost bool
+	for _, shape := range out {
+		if shape.raw == "https://user:tok@github.com" {
+			credentialedHost = true
+			require.Equal(t, "https://github.com", shape.stored)
+			require.True(t, shape.producer)
+			require.False(t, shape.identity)
+		}
+	}
+	require.True(t, credentialedHost)
 	return out
 }
 

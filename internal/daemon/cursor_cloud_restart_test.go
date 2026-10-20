@@ -532,8 +532,10 @@ func TestCursorCloudRestartNotesLegacyUnusableRepo(t *testing.T) {
 
 // TestCursorCloudRestartDeletesLegacyRowWithLiveRemote is the delete half of
 // the legacy pin. repo_identity is empty, and origin still names the
-// repository the agent was launched on. Restart deletes that agent. A second
-// start leaves it cleaned. Skipping the row leaves the agent in place.
+// repository the agent was launched on. Restart deletes that agent only
+// because an unusable stored identity falls back to the checkout remote.
+// Leaving repoURL as the empty identity skips the sweep: the agent stays
+// and this test fails. A second start leaves the row cleaned.
 func TestCursorCloudRestartDeletesLegacyRowWithLiveRemote(t *testing.T) {
 	tc, fake := cursorCloudRestartFixture(t)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)
@@ -562,6 +564,8 @@ func TestCursorCloudRestartDeletesLegacyRowWithLiveRemote(t *testing.T) {
 // TestCursorCloudRestartDeletesAcceptedFileHostLaunch is the round trip for
 // an odd shape both validators accept. The launch POSTs file://localhost/...,
 // and the restart sweep deletes that agent from the stored identity.
+// Sweeping the checkout origin instead leaves the file-host agent in place
+// and recover returns not-listed.
 func TestCursorCloudRestartDeletesAcceptedFileHostLaunch(t *testing.T) {
 	const raw = "file://localhost/tmp/repo.git"
 	cleaned := config.StripURLCredentials(raw)
