@@ -671,6 +671,40 @@ func cursorCloudAgeLaunch(t *testing.T, db *storage.DB, jobID int64) {
 	require.NoError(t, err)
 }
 
+func TestOrphanCloudLaunchRecoveryDeletesVM(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	created := cursorCloudPersistAttempt(t, tc, fake, job.ID, "orphan-vm-tok", true)
+	_, err := tc.DB.Exec(`INSERT INTO review_job_cloud_launches
+		(job_id, launch_token, agent_id, repo_identity, orphan_note, cleaned)
+		VALUES (?, '', '', ?, ?, 0)`, job.ID, cursorCloudRestartRepo, storage.CloudLaunchPendingNote)
+	require.NoError(t, err)
+	require.NoError(t, tc.DB.DeleteRepo(tc.Repo.ID, true))
+	var jobs, repos int
+	require.NoError(t, tc.DB.QueryRow(`SELECT COUNT(*) FROM review_jobs WHERE id = ?`, job.ID).Scan(&jobs))
+	require.NoError(t, tc.DB.QueryRow(`SELECT COUNT(*) FROM repos WHERE id = ?`, tc.Repo.ID).Scan(&repos))
+	assert.Equal(t, 0, jobs)
+	assert.Equal(t, 0, repos)
+
+	err = recoverStaleJobs(context.Background(), tc.DB, fake)
+	// assert so an inner-join revert still reports the missed stop, delete, and clean.
+	assert.Error(t, err) //nolint:testifylint // keep going to the VM and row checks
+	assert.Equal(t, []string{created.ID}, cursorCloudCallIDs(fake, cursorcloudtest.MethodStop))
+	assert.Equal(t, []string{created.ID}, cursorCloudCallIDs(fake, cursorcloudtest.MethodDelete))
+	_, getErr := fake.GetAgent(t.Context(), created.ID)
+	assert.Error(t, getErr) //nolint:testifylint // keep going to the cleaned-row checks
+
+	var cleaned int
+	var note string
+	require.NoError(t, tc.DB.QueryRow(`SELECT cleaned, orphan_note FROM review_job_cloud_launches WHERE launch_token = ?`, "orphan-vm-tok").Scan(&cleaned, &note))
+	assert.Equal(t, 1, cleaned)
+	assert.Empty(t, note)
+	require.NoError(t, tc.DB.QueryRow(`SELECT cleaned, orphan_note FROM review_job_cloud_launches WHERE launch_token = '' AND job_id = ?`, job.ID).Scan(&cleaned, &note))
+	assert.Equal(t, 0, cleaned)
+	assert.Contains(t, note, "orphan risk")
+}
+
 func TestRecoverCloudLaunchLogsLeakedAgentAfterJobDelete(t *testing.T) {
 	tc := newWorkerTestContext(t, 1)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)
