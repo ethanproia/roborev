@@ -1733,33 +1733,74 @@ const localCloudLaunchDDL = `CREATE TABLE IF NOT EXISTS review_job_cloud_launche
 )`
 
 func (p *PgPool) ensureLocalCloudLaunchTable(ctx context.Context) {
+	exec := func(what, query string, args ...any) {
+		if _, err := p.pool.Exec(ctx, query, args...); err != nil {
+			log.Printf("cursor-cloud: %s: %v", what, err)
+		}
+	}
 	if _, err := p.pool.Exec(ctx, localCloudLaunchDDL); err != nil {
 		log.Printf("cursor-cloud: local launch table: %v", err)
 		return
 	}
-	if _, err := p.pool.Exec(ctx, `ALTER TABLE review_job_cloud_launches ADD COLUMN IF NOT EXISTS orphan_note TEXT NOT NULL DEFAULT ''`); err != nil {
-		log.Printf("cursor-cloud: orphan_note: %v", err)
-	}
+	// e387fe29 created this table without created_at or repo_identity.
+	// CREATE TABLE IF NOT EXISTS does not add them. Columns are added
+	// nullable so the backfill can run before NOT NULL, defaults, and the
+	// job_id shape. Those constraints apply only after every row has a value.
+	exec("orphan_note", `ALTER TABLE review_job_cloud_launches ADD COLUMN IF NOT EXISTS orphan_note TEXT`)
+	exec("repo_identity", `ALTER TABLE review_job_cloud_launches ADD COLUMN IF NOT EXISTS repo_identity TEXT`)
+	exec("created_at", `ALTER TABLE review_job_cloud_launches ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ`)
+	// The old launch row has no clock of its own. The job start is the
+	// closest instant, then enqueue, then NOW() when the job row is gone.
+	// A created_at that is already stored is left alone.
+	exec("created_at backfill", `UPDATE review_job_cloud_launches AS l
+		SET created_at = COALESCE(j.started_at, j.enqueued_at, NOW())
+		FROM review_jobs AS j
+		WHERE l.job_id = j.id AND l.created_at IS NULL`)
+	exec("created_at now", `UPDATE review_job_cloud_launches SET created_at = NOW() WHERE created_at IS NULL`)
+	// sqlite adds repo_identity TEXT NOT NULL DEFAULT '' and does not copy
+	// repos.identity. Restart reads the checkout remote when the stored
+	// value is blank.
+	exec("repo_identity backfill", `UPDATE review_job_cloud_launches SET repo_identity = '' WHERE repo_identity IS NULL`)
+	exec("orphan_note null", `UPDATE review_job_cloud_launches SET orphan_note = '' WHERE orphan_note IS NULL`)
+
+	exec("orphan_note default", `ALTER TABLE review_job_cloud_launches ALTER COLUMN orphan_note SET DEFAULT ''`)
+	exec("orphan_note not null", `ALTER TABLE review_job_cloud_launches ALTER COLUMN orphan_note SET NOT NULL`)
+	exec("repo_identity default", `ALTER TABLE review_job_cloud_launches ALTER COLUMN repo_identity SET DEFAULT ''`)
+	exec("repo_identity not null", `ALTER TABLE review_job_cloud_launches ALTER COLUMN repo_identity SET NOT NULL`)
+	exec("created_at default", `ALTER TABLE review_job_cloud_launches ALTER COLUMN created_at SET DEFAULT NOW()`)
+	exec("created_at not null", `ALTER TABLE review_job_cloud_launches ALTER COLUMN created_at SET NOT NULL`)
+
 	// DEFAULT '' let an older insert omit the token and store a blank.
 	// New writes must pass a token. Existing blanks stay blank and uncleaned.
-	if _, err := p.pool.Exec(ctx, `ALTER TABLE review_job_cloud_launches ALTER COLUMN launch_token DROP DEFAULT`); err != nil {
-		log.Printf("cursor-cloud: launch token default: %v", err)
-	}
-	if _, err := p.pool.Exec(ctx, `UPDATE review_job_cloud_launches SET launch_token = '' WHERE launch_token IS NULL`); err != nil {
-		log.Printf("cursor-cloud: launch token null: %v", err)
-	}
-	if _, err := p.pool.Exec(ctx, `UPDATE review_job_cloud_launches SET orphan_note = $1
-		WHERE NOT cleaned AND orphan_note = ''`, CloudLaunchPendingNote); err != nil {
-		log.Printf("cursor-cloud: orphan note backfill: %v", err)
-	}
+	exec("launch token default", `ALTER TABLE review_job_cloud_launches ALTER COLUMN launch_token DROP DEFAULT`)
+	exec("launch token null", `UPDATE review_job_cloud_launches SET launch_token = '' WHERE launch_token IS NULL`)
+	exec("orphan note backfill", `UPDATE review_job_cloud_launches SET orphan_note = $1
+		WHERE NOT cleaned AND orphan_note = ''`, CloudLaunchPendingNote)
 	// Older builds created this table with ON DELETE CASCADE. Dropping the
 	// job must not drop the launch row. Rows are not rewritten. Only the
 	// current schema's launch table oid, and only its job_id foreign key
-	// to review_jobs(id), is dropped.
-	if _, err := p.pool.Exec(ctx, dropCloudLaunchJobFKSQL); err != nil {
-		log.Printf("cursor-cloud: drop launch foreign key: %v", err)
-	}
+	// to review_jobs(id), is dropped. The job_id type change follows that
+	// drop: the e387fe29 INTEGER foreign key cannot become BIGINT until
+	// the constraint is gone.
+	exec("drop launch foreign key", dropCloudLaunchJobFKSQL)
+	exec("job_id null", `ALTER TABLE review_job_cloud_launches ALTER COLUMN job_id DROP NOT NULL`)
+	exec("job_id type", widenCloudLaunchJobIDSQL)
 }
+
+// widenCloudLaunchJobIDSQL matches a fresh install, where job_id is BIGINT.
+// e387fe29 used INTEGER. The rewrite is skipped when the column is already bigint.
+const widenCloudLaunchJobIDSQL = `DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'review_job_cloud_launches'
+      AND column_name = 'job_id'
+      AND udt_name IS DISTINCT FROM 'int8'
+  ) THEN
+    EXECUTE 'ALTER TABLE review_job_cloud_launches ALTER COLUMN job_id TYPE BIGINT';
+  END IF;
+END $$`
 
 // dropCloudLaunchJobFKSQL drops one constraint: the current schema's
 // review_job_cloud_launches.job_id referencing that schema's review_jobs(id).
