@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -296,11 +295,11 @@ func TestCursorCloudDuplicateCreateBeforeCleaned(t *testing.T) {
 	})
 }
 
-// TestCursorCloudRestartDuplicateWithoutRepoStaysUncleaned is the
-// unusable-repository branch with a saved agent id. The marker sweep cannot
-// run. The launch stays uncleaned. Job status has no orphan_warning field and
-// this path does not write an orphan-risk note. The warning is the cleanup log.
-func TestCursorCloudRestartDuplicateWithoutRepoStaysUncleaned(t *testing.T) {
+// TestCursorCloudRestartSweepsDuplicateWithoutRepo deletes the saved agent
+// and the other VM that carries the same launch token when the repository
+// cannot be named. The row is cleaned after both deletes. Leaving the
+// duplicate in place, or skipping the sweep, fails this test.
+func TestCursorCloudRestartSweepsDuplicateWithoutRepo(t *testing.T) {
 	tc, fake := cursorCloudRestartFixture(t)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)
 	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
@@ -313,31 +312,18 @@ func TestCursorCloudRestartDuplicateWithoutRepoStaysUncleaned(t *testing.T) {
 	require.NoError(t, tc.DB.BeginCloudLaunch(job.ID, testWorkerID, token, ""))
 	require.NoError(t, tc.DB.AttachCloudAgent(job.ID, token, saved.ID))
 	tc.GitRepo.Run("remote", "remove", "origin")
-	var launchID int64
-	require.NoError(t, tc.DB.QueryRow(
-		`SELECT id FROM review_job_cloud_launches WHERE job_id = ? AND launch_token = ?`,
-		job.ID, token,
-	).Scan(&launchID))
-	logs := cursorCloudCaptureLog(t)
 
-	err = recoverStaleJobs(context.Background(), tc.DB, fake)
-	_, getErr := fake.GetAgent(t.Context(), saved.ID)
-	require.Error(t, getErr)
-	got, getErr := fake.GetAgent(t.Context(), dup.ID)
-	require.NoError(t, getErr)
-	assert.Equal(t, dup.ID, got.ID)
-	n, countErr := tc.DB.CountUncleanedCloudLaunches(job.ID)
-	require.NoError(t, countErr)
-	assert.Equal(t, 1, n)
-	assert.Contains(t, logs.String(), fmt.Sprintf(
-		"cursor-cloud: cleanup job %d launch %d: cursor-cloud: launch %d has no repository to sweep",
-		job.ID, launchID, launchID,
-	))
-	updated, getErr := tc.DB.GetJobByID(job.ID)
-	require.NoError(t, getErr)
-	assert.NotContains(t, updated.Error, "orphan_warning")
-	assert.NotContains(t, updated.Error, "orphan risk")
+	require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+	_, err = fake.GetAgent(t.Context(), saved.ID)
 	require.Error(t, err)
+	_, err = fake.GetAgent(t.Context(), dup.ID)
+	require.Error(t, err)
+	n, err := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	updated, err := tc.DB.GetJobByID(job.ID)
+	require.NoError(t, err)
+	assert.NotContains(t, updated.Error, "orphan risk")
 }
 
 // TestCursorCloudRestartCleansAfterAppliedDelete is C2. The delete already
