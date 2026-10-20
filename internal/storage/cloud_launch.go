@@ -41,8 +41,8 @@ func (db *DB) execLaunch(query string, args ...any) error {
 }
 
 func (db *DB) BeginCloudLaunch(jobID int64, workerID, token, repoURL string) error {
-	if err := db.execLaunch(`INSERT INTO review_job_cloud_launches (job_id, launch_token, repo_identity)
-		SELECT id, ?, ? FROM review_jobs WHERE id = ? AND status = 'running' AND worker_id = ?`,
+	if err := db.execLaunch(`INSERT INTO review_job_cloud_launches (job_id, launch_token, repo_identity, created_at)
+		SELECT id, ?, ?, datetime('now') FROM review_jobs WHERE id = ? AND status = 'running' AND worker_id = ?`,
 		token, repoURL, jobID, workerID); err != nil {
 		return err
 	}
