@@ -1037,58 +1037,63 @@ func TestCursorCloudRestartMarkerSweepErrorKeepsSavedAgent(t *testing.T) {
 }
 
 // TestCursorCloudRestartByTokenCleansSharedToken is the restart success
-// path. One confirmed sweep cleans every uncleaned row for that token,
-// including a second row on the same job. Cleaning only the swept row id
-// leaves the sibling uncleaned and keeps its note.
+// path. Two uncleaned rows share one token. The marker sweep deletes that
+// VM once, and both rows are cleaned. Cleaning only the swept row id leaves
+// the other row uncleaned.
 func TestCursorCloudRestartByTokenCleansSharedToken(t *testing.T) {
 	tc, fake := cursorCloudRestartFixture(t)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)
 	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
 	const token = "launch-token-bytoken-success"
-	created := cursorCloudPersistAttempt(t, tc, fake, job.ID, token, true)
-	_, err := tc.DB.Exec(`INSERT INTO review_job_cloud_launches
-		(job_id, launch_token, agent_id, repo_identity, orphan_note, cleaned, created_at)
-		VALUES (?, ?, '', ?, 'cursor-cloud orphan risk: sibling', 0, datetime('now'))`,
-		job.ID, token, cursorCloudRestartRepo)
-	require.NoError(t, err)
-	rows, err := tc.DB.ListUncleanedCloudLaunches()
-	require.NoError(t, err)
-	var primary storage.CloudLaunch
-	for _, row := range rows {
-		if row.AgentID == created.ID {
-			primary = row
-		}
-	}
-	require.NotZero(t, primary.ID)
 	machineID, err := tc.DB.GetMachineID()
 	require.NoError(t, err)
-	cursorCloudAgeLaunch(t, tc.DB, job.ID)
-	_, err = tc.DB.Exec(`UPDATE review_job_cloud_launches SET sweep_seen = 1 WHERE id = ?`, primary.ID)
+	created := cursorCloudSeedAgent(t, fake, sha, agent.CursorCloudLaunchMarker(machineID.String(), token)) //nolint:forbidigo // launch marker is prompt text
+	_, err = tc.DB.Exec(`INSERT INTO review_job_cloud_launches
+		(job_id, launch_token, agent_id, repo_identity, orphan_note, cleaned, created_at)
+		VALUES
+		(?, ?, ?, ?, 'cursor-cloud orphan risk: one', 0, datetime('now')),
+		(?, ?, '', ?, 'cursor-cloud orphan risk: two', 0, datetime('now'))`,
+		job.ID, token, created.ID, cursorCloudRestartRepo,
+		job.ID, token, cursorCloudRestartRepo)
 	require.NoError(t, err)
-	_, err = tc.DB.Exec(`UPDATE review_jobs SET error = ? WHERE id = ?`, agent.CursorCloudPendingOrphanNote(), job.ID)
+	var uncleaned int
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT COUNT(*) FROM review_job_cloud_launches WHERE launch_token = ? AND cleaned = 0`, token,
+	).Scan(&uncleaned))
+	require.Equal(t, 2, uncleaned)
+	rows, err := tc.DB.ListUncleanedCloudLaunches()
 	require.NoError(t, err)
-	rows, err = tc.DB.ListUncleanedCloudLaunches()
-	require.NoError(t, err)
-	for _, row := range rows {
-		if row.ID == primary.ID {
-			primary = row
+	var row storage.CloudLaunch
+	for _, candidate := range rows {
+		if candidate.AgentID == created.ID {
+			row = candidate
+			break
 		}
 	}
+	require.Equal(t, token, row.Token)
 
-	require.NoError(t, recoverOneCloudLaunch(context.Background(), tc.DB, fake, machineID.String(), primary, nil)) //nolint:forbidigo // launch marker is prompt text
+	err = recoverOneCloudLaunch(context.Background(), tc.DB, fake, machineID.String(), row, nil) //nolint:forbidigo // launch marker is prompt text
+	require.Error(t, err)
+	assert.Equal(t, []string{created.ID}, cursorCloudCallIDs(fake, cursorcloudtest.MethodDelete))
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT COUNT(*) FROM review_job_cloud_launches WHERE launch_token = ? AND cleaned = 0`, token,
+	).Scan(&uncleaned))
+	assert.Equal(t, 2, uncleaned)
 
-	var cleanedPrimary, cleanedSibling int
-	var noteSibling string
+	cursorCloudAgeLaunch(t, tc.DB, job.ID)
+	rows, err = tc.DB.ListUncleanedCloudLaunches()
+	require.NoError(t, err)
+	for _, candidate := range rows {
+		if candidate.ID == row.ID {
+			row = candidate
+		}
+	}
+	require.NoError(t, recoverOneCloudLaunch(context.Background(), tc.DB, fake, machineID.String(), row, nil)) //nolint:forbidigo // launch marker is prompt text
+	var cleaned int
 	require.NoError(t, tc.DB.QueryRow(
-		`SELECT cleaned FROM review_job_cloud_launches WHERE id = ?`, primary.ID,
-	).Scan(&cleanedPrimary))
-	require.NoError(t, tc.DB.QueryRow(
-		`SELECT cleaned, orphan_note FROM review_job_cloud_launches WHERE launch_token = ? AND id != ?`,
-		token, primary.ID,
-	).Scan(&cleanedSibling, &noteSibling))
-	assert.Equal(t, 1, cleanedPrimary)
-	assert.Equal(t, 1, cleanedSibling)
-	assert.Empty(t, noteSibling)
+		`SELECT COUNT(*) FROM review_job_cloud_launches WHERE launch_token = ? AND cleaned = 1`, token,
+	).Scan(&cleaned))
+	assert.Equal(t, 2, cleaned)
 }
 
 // TestCloudLaunchOrphanNoteSurvivesRestart reopens the database and runs

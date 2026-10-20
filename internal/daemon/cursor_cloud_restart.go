@@ -116,9 +116,6 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	}
 	found, err := agent.DeleteCursorCloudLaunchByMarker(ctx, client, daemonID, row.Token, repoURL)
 	if err != nil {
-		// Fail closed. A saved agent id was already deleted above when it
-		// was set. The marker sweep is the only look at any other VM for
-		// this token, so a list or delete error leaves the row uncleaned.
 		return err
 	}
 	if cursorCloudSamePassResweep != nil {
