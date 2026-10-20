@@ -1130,11 +1130,13 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("add budget_routing_locked column: %w", err)
 		}
 	}
-	// explicit_host records that enqueue saw --host. It is local scheduling
+	// explicit_host records that enqueue resolved cursor-cloud from --host,
+	// repo or global config, or ROBOREV_DEFAULT_HOST. It is local scheduling
 	// state, like backup_auto: only terminal jobs sync, and the worker that
 	// fails the job over is this daemon. Postgres stays on schema v23 so
 	// older binaries can still open a shared database. Old rows default to
-	// 0 and keep the config-host check.
+	// 0 and keep the live config-host check. A cursor-cloud agent with no
+	// host source stays 0 and may fail over.
 	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('review_jobs') WHERE name = 'explicit_host'`).Scan(&count)
 	if err == nil && count == 0 {
 		_, err = db.Exec(`ALTER TABLE review_jobs ADD COLUMN explicit_host INTEGER NOT NULL DEFAULT 0`)
