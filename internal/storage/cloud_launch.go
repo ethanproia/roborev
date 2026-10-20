@@ -321,15 +321,24 @@ func ParseCloudLaunchCreatedAt(s string) (time.Time, bool) {
 }
 
 // backfillCloudLaunchCreatedAt normalizes created_at before the NOT NULL
-// rebuild. The column was added as TEXT NOT NULL DEFAULT ” (SQLite fills
-// existing rows with that default and rejects a later NULL write), so a
-// migrated table cannot store NULL. A nullable legacy value is stored as one
-// space so the copy succeeds; a space does not parse and the sweep reports it.
-// When datetime(created_at) returns an instant, that instant is stored. This
-// does not use datetime('now'), so a date-only or offset value keeps its age.
-// A value datetime() rejects is left as written and reported as an orphan.
+// rebuild. Every shipped DDL that has the column adds it NOT NULL with a
+// default (SQLite fills existing rows and rejects a later NULL write), so a
+// migrated table cannot store NULL. A NULL forced in from outside is stored
+// as one space so the copy succeeds; a space does not parse and the sweep
+// reports it.
+// When datetime(created_at) returns a fixed instant, that text is stored.
+// Exact ” is the ADD COLUMN default for a row that had no timestamp, so it
+// becomes datetime('now') and the clock starts. The literal now is left
+// unchanged: datetime() of that word is the current clock and would reset
+// the age. A value datetime() rejects is left as written and reported as an orphan.
 func (db *DB) backfillCloudLaunchCreatedAt() error {
 	if _, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = ' ' WHERE created_at IS NULL`); err != nil {
+		return fmt.Errorf("cloud launch created_at: %w", err)
+	}
+	// ADD COLUMN ... DEFAULT '' fills rows that predate the column. That
+	// empty string is not an age. datetime('now') starts the clock once.
+	// Every other value keeps the instant datetime() reads, or stays as written.
+	if _, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now') WHERE created_at = ''`); err != nil {
 		return fmt.Errorf("cloud launch created_at: %w", err)
 	}
 	rows, err := db.Query(`SELECT id, created_at, datetime(created_at) FROM review_job_cloud_launches`)
@@ -349,6 +358,10 @@ func (db *DB) backfillCloudLaunchCreatedAt() error {
 			return fmt.Errorf("cloud launch created_at: %w", err)
 		}
 		if !created.Valid || !normalized.Valid || created.String == normalized.String {
+			continue
+		}
+		// SQLite treats any case of "now" as the current UTC time.
+		if strings.EqualFold(created.String, "now") {
 			continue
 		}
 		fixes = append(fixes, createdAtFix{id: id, value: normalized.String})

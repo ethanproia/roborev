@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1065,16 +1066,58 @@ func cursorCloudAgeLaunch(t *testing.T, db *storage.DB, jobID int64) {
 }
 
 func TestMalformedCreatedAtIsReportedAsOrphan(t *testing.T) {
+	// Shapes Go already accepts must be young. An old value would still be
+	// reported as aged out after the datetime() check is removed.
+	young := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	youngSQL := young.Format("2006-01-02 15:04:05")
 	cases := []struct {
 		name string
 		raw  string
 		null bool
 	}{
 		{name: "null", null: true},
+		{name: "empty", raw: ""},
 		{name: "whitespace", raw: " \t "},
+		{name: "leading-space", raw: " 1999-06-15 12:00:00"},
+		{name: "trailing-space", raw: "1999-06-15 12:00:00 "},
+		{name: "trailing-newline", raw: "1999-06-15 12:00:00\n"},
 		{name: "garbage", raw: "not-a-date"},
-		{name: "date-only", raw: "1999-06-15"},
+		{name: "unix-seconds", raw: "946684800"},
 		{name: "epoch", raw: "0"},
+		{name: "julian-unix", raw: "2440587.5"},
+		{name: "julian-day", raw: "2451545"},
+		{name: "plus-0000", raw: "+0000"},
+		{name: "date-only", raw: "1999-06-15"},
+		{name: "day-overflow", raw: "1999-06-31"},
+		{name: "non-leap", raw: "1900-02-29"},
+		{name: "minute-precision", raw: "1999-06-15 12:00"},
+		{name: "minute-t", raw: "1999-06-15T12:00"},
+		{name: "minute-z", raw: "1999-06-15T12:00Z"},
+		{name: "minute-offset", raw: "1999-06-15T12:00-05:00"},
+		{name: "t-without-zone", raw: "1999-06-15T12:00:00"},
+		{name: "t-fractional", raw: "1999-06-15T12:00:00.500"},
+		{name: "lowercase-z", raw: "1999-06-15T12:00:00z"},
+		{name: "space-lowercase-z", raw: "1999-06-15 12:00:00z"},
+		{name: "space-with-z", raw: "1999-06-15 12:00:00Z"},
+		{name: "space-offset", raw: "1999-06-15 12:00:00-05:00"},
+		{name: "space-fractional-z", raw: "1999-06-15 12:00:00.500Z"},
+		{name: "space-fractional-offset", raw: "1999-06-15 12:00:00.5-05:00"},
+		{name: "trailing-z-space", raw: "1999-06-15T12:00:00Z "},
+		{name: "time-only", raw: "12:00:00"},
+		{name: "time-only-hm", raw: "12:00"},
+		{name: "time-only-fractional", raw: "12:00:00.5"},
+		{name: "hour-24", raw: "1999-06-15 24:00:00"},
+		{name: "hour-24-z", raw: "1999-06-15T24:00:00Z"},
+		{name: "keyword-now", raw: "now"},
+		{name: "keyword-NOW", raw: "NOW"},
+		{name: "fractional-seconds", raw: youngSQL + ".500"},
+		{name: "zulu", raw: young.Format(time.RFC3339)},
+		{name: "utc-offset", raw: youngSQL[:10] + "T" + youngSQL[11:] + "+00:00"},
+		{name: "non-utc-offset", raw: young.In(time.FixedZone("west", -5*3600)).Format("2006-01-02T15:04:05Z07:00")},
+		{name: "half-hour-offset", raw: young.In(time.FixedZone("east", 5*3600+1800)).Format("2006-01-02T15:04:05Z07:00")},
+		{name: "double-space", raw: strings.Replace(youngSQL, " ", "  ", 1)},
+		{name: "comma-fractional", raw: youngSQL + ",500"},
+		{name: "negative-year", raw: "-4713-11-24 12:00:00"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
