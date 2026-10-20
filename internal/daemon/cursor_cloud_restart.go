@@ -79,10 +79,14 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 		repoURL = config.StripURLCredentials(git.GetRemoteURL(row.RepoPath, ""))
 	}
 	if !agent.CursorCloudRepoUsable(repoURL) {
-		if row.AgentID != "" {
-			return db.MarkCloudLaunchCleaned(row.ID)
+		// The known agent id may already be gone. Another VM from this token
+		// can still exist, and there is no repository to list it by.
+		msg := fmt.Sprintf("cursor-cloud orphan risk: launch %d has no repository to sweep", row.ID)
+		log.Print(msg)
+		if noteErr := db.NoteCloudLaunchRisk(row.JobID, msg); noteErr != nil {
+			return noteErr
 		}
-		return fmt.Errorf("cursor-cloud: launch %d has no repository to sweep", row.ID)
+		return errors.New(msg)
 	}
 	found, err := agent.DeleteCursorCloudLaunchByMarker(ctx, client, daemonID, row.Token, repoURL)
 	if err != nil {

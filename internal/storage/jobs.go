@@ -1409,8 +1409,24 @@ func validateStructuredOutputForWrite(raw jsontext.Value) error {
 // Pass empty workerID to skip the ownership check (for admin/test callers).
 // Returns true if the job was actually updated (false when ownership or status
 // check prevented the update).
+// mergeOrphanRisk keeps a pending cursor-cloud note when a later status
+// write replaces the job error. Failover, fail, and cancel all go through it.
+func (db *DB) mergeOrphanRisk(jobID int64, next string) string {
+	var prev string
+	_ = db.QueryRow(`SELECT COALESCE(error, '') FROM review_jobs WHERE id = ?`, jobID).Scan(&prev)
+	i := strings.Index(prev, "orphan risk")
+	if i < 0 || strings.Contains(next, "orphan risk") {
+		return next
+	}
+	if strings.TrimSpace(next) == "" {
+		return prev[i:]
+	}
+	return next + " " + prev[i:]
+}
+
 func (db *DB) FailJob(jobID int64, workerID string, errorMsg string) (bool, error) {
 	now := time.Now().Format(time.RFC3339)
+	errorMsg = db.mergeOrphanRisk(jobID, errorMsg)
 	var result sql.Result
 	var err error
 	if workerID != "" {
@@ -1792,6 +1808,10 @@ func (db *DB) FailoverJob(jobID int64, workerID, backupAgent, backupModel string
 	if backupAgent == "" {
 		return false, nil
 	}
+	var kept any
+	if note := db.mergeOrphanRisk(jobID, ""); note != "" {
+		kept = note
+	}
 	result, err := db.Exec(`
 		UPDATE review_jobs
 		SET agent = ?, budget_routing_locked = 1,
@@ -1801,7 +1821,7 @@ func (db *DB) FailoverJob(jobID int64, workerID, backupAgent, backupModel string
 		    worker_id = NULL,
 		    started_at = NULL,
 		    finished_at = NULL,
-		    error = NULL,
+		    error = ?,
 		    session_id = NULL,
 		    session_resumed = 0,
 		    resume_source_job_uuid = NULL,
@@ -1814,7 +1834,7 @@ func (db *DB) FailoverJob(jobID int64, workerID, backupAgent, backupModel string
 		  AND status = 'running'
 		  AND worker_id = ?
 		  AND agent != ?
-	`, backupAgent, nullString(backupModel), jobID, workerID, backupAgent)
+	`, backupAgent, nullString(backupModel), kept, jobID, workerID, backupAgent)
 	if err != nil {
 		return false, err
 	}

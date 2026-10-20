@@ -48,6 +48,7 @@ type BatchReviewResult struct {
 // job is already terminal.
 func (db *DB) CancelJobWithError(jobID int64, errMsg string) error {
 	now := time.Now().Format(time.RFC3339)
+	errMsg = db.mergeOrphanRisk(jobID, errMsg)
 	result, err := db.Exec(`
 		UPDATE review_jobs
 		SET status = 'canceled', error = ?, finished_at = ?, updated_at = ?

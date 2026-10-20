@@ -418,6 +418,61 @@ func TestCloudLaunchIdentityMigrationKeepsRows(t *testing.T) {
 	assert.Equal(t, 0, cleaned)
 }
 
+func TestBeginCloudLaunchCreatedAtIsInsertTime(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	_, err := db.Exec(`DROP TABLE review_job_cloud_launches`)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE review_job_cloud_launches (
+		id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, launch_token TEXT NOT NULL,
+		agent_id TEXT NOT NULL DEFAULT '', cleaned INTEGER NOT NULL DEFAULT 0,
+		repo_identity TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '')`)
+	require.NoError(t, err)
+	repo := createRepo(t, db, t.TempDir())
+	commit := createCommit(t, db, repo.ID, "abc123")
+	job := enqueueJob(t, db, repo.ID, commit.ID, "abc123")
+	setJobStatus(t, db, job.ID, JobStatusRunning)
+	_, err = db.Exec(`UPDATE review_jobs SET worker_id = 'w' WHERE id = ?`, job.ID)
+	require.NoError(t, err)
+	require.NoError(t, db.BeginCloudLaunch(job.ID, "w", "tok", "https://example.com/acme/repo.git"))
+	var created string
+	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE job_id = ?`, job.ID).Scan(&created))
+	assert.NotEmpty(t, created)
+	_, err = db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now') WHERE created_at = ''`)
+	require.NoError(t, err)
+	var again string
+	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE job_id = ?`, job.ID).Scan(&again))
+	assert.Equal(t, created, again)
+}
+
+func TestFailAndCancelKeepOrphanRisk(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	repo := createRepo(t, db, t.TempDir())
+	commit := createCommit(t, db, repo.ID, "abc123")
+	failed := enqueueJob(t, db, repo.ID, commit.ID, "abc123")
+	setJobStatus(t, db, failed.ID, JobStatusRunning)
+	_, err := db.Exec(`UPDATE review_jobs SET worker_id = 'w' WHERE id = ?`, failed.ID)
+	require.NoError(t, err)
+	require.NoError(t, db.NoteCloudLaunchRisk(failed.ID, "cursor-cloud orphan risk: pending cleanup"))
+	ok, err := db.FailJob(failed.ID, "w", "agent: delete failed")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	got, err := db.GetJobByID(failed.ID)
+	require.NoError(t, err)
+	assert.Contains(t, got.Error, "orphan risk")
+	assert.Contains(t, got.Error, "agent: delete failed")
+
+	canceled := enqueueJob(t, db, repo.ID, commit.ID, "def456")
+	setJobStatus(t, db, canceled.ID, JobStatusRunning)
+	require.NoError(t, db.NoteCloudLaunchRisk(canceled.ID, "cursor-cloud orphan risk: pending cleanup"))
+	require.NoError(t, db.CancelJobWithError(canceled.ID, "canceled"))
+	got, err = db.GetJobByID(canceled.ID)
+	require.NoError(t, err)
+	assert.Contains(t, got.Error, "orphan risk")
+	assert.Contains(t, got.Error, "canceled")
+}
+
 func TestMigrationFromOldSchema(t *testing.T) {
 	t.Parallel()
 	db := prepareMigratedDB(

@@ -183,6 +183,9 @@ type CursorCloudAgent struct {
 	DaemonID   string
 	BindLaunch func(token, repoURL string) error
 	BindAgent  func(token, id string) error
+	// BindCleaned marks this attempt's row cleaned after a confirmed delete
+	// or a create that never sent a VM.
+	BindCleaned func(token string) error
 	// NoteCleanupFailure records a stop or delete that did not finish.
 	// The launch row stays uncleaned.
 	NoteCleanupFailure func(msg string) error
@@ -291,11 +294,14 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 		sent := !cursorCloudPreSend(err)
 		if !sent {
 			// The POST never left, so this attempt does not spend the hour.
+			a.markLaunchCleaned(token)
 			refund()
 			return "", err
 		}
 		if recErr := reconcileCursorCloudLaunch(ctx, client, repoURL, reconcileToken, output); recErr != nil {
 			err = errors.Join(err, recErr)
+		} else {
+			a.markLaunchCleaned(token)
 		}
 		return "", cursorCloudNonRetryable(err)
 	}
@@ -304,22 +310,24 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 	defer func() {
 		delErr := deleteCursorCloudAgent(client, created.ID, output)
 		if delErr == nil {
+			a.markLaunchCleaned(token)
 			return
 		}
 		// The VM is still there. Say so now; the row stays uncleaned for the
 		// next startup sweep. Do not wait for that restart to mention it.
 		msg := fmt.Sprintf("cursor-cloud orphan risk: pending cleanup for agent %s: %v", created.ID, delErr)
 		log.Print(msg)
+		noted := errors.New(msg)
 		if a.NoteCleanupFailure != nil {
 			if noteErr := a.NoteCleanupFailure(msg); noteErr != nil {
-				delErr = errors.Join(delErr, noteErr)
+				noted = errors.Join(noted, noteErr)
 			}
 		}
 		if err != nil {
-			err = errors.Join(err, delErr)
+			err = errors.Join(err, noted)
 			return
 		}
-		err = cursorCloudNonRetryable(delErr)
+		err = cursorCloudNonRetryable(noted)
 	}()
 	if a.BindAgent != nil {
 		if bindErr := a.BindAgent(token, created.ID); bindErr != nil {
@@ -653,6 +661,12 @@ func deleteMatchingCursorCloudLaunch(ctx context.Context, client cursorcloud.Cli
 		}
 	}
 	return found, errors.Join(errs...)
+}
+
+func (a *CursorCloudAgent) markLaunchCleaned(token string) {
+	if a != nil && a.BindCleaned != nil {
+		_ = a.BindCleaned(token)
+	}
 }
 
 func StopAndDeleteCursorCloudAgent(client cursorcloud.Client, id string) error {

@@ -478,15 +478,27 @@ func (wp *WorkerPool) handleUpdateInterruptionLocked(
 	if !targeted {
 		return false
 	}
-	// A sent cursor-cloud create must not be queued again.
-	failedSent, err := wp.db.FailSentCloudLaunch(job.ID, workerID)
+	// A live VM must not be queued again. A launch already deleted keeps the
+	// finished review instead of being failed as a restart.
+	live, err := wp.db.CountUncleanedCloudLaunches(job.ID)
 	if err != nil {
-		log.Printf("[%s] Error failing sent cursor-cloud launch for update-interrupted job %d: %v", workerID, job.ID, err)
+		log.Printf("[%s] Error counting cursor-cloud launches for job %d: %v", workerID, job.ID, err)
 		return true
 	}
-	if failedSent {
-		log.Printf("[%s] cursor-cloud sent launch for job %d was not requeued", workerID, job.ID)
-		return true
+	if live > 0 {
+		failedSent, ferr := wp.db.FailSentCloudLaunch(job.ID, workerID)
+		if ferr != nil {
+			log.Printf("[%s] Error failing sent cursor-cloud launch for update-interrupted job %d: %v", workerID, job.ID, ferr)
+			return true
+		}
+		if failedSent {
+			log.Printf("[%s] cursor-cloud sent launch for job %d was not requeued", workerID, job.ID)
+			return true
+		}
+	}
+	var cleaned int
+	if err := wp.db.QueryRow(`SELECT COUNT(*) FROM review_job_cloud_launches WHERE job_id = ? AND cleaned = 1`, job.ID).Scan(&cleaned); err == nil && cleaned > 0 {
+		return false
 	}
 	requeued, err := wp.db.RequeueUpdateInterruptedJob(job.ID, workerID)
 	if err != nil {
@@ -721,6 +733,7 @@ func (wp *WorkerPool) bindCursorCloudLaunch(workerID string, job *storage.Review
 		return wp.db.BeginCloudLaunch(job.ID, workerID, token, repoURL)
 	}
 	copied.BindAgent = func(token, id string) error { return wp.db.AttachCloudAgent(job.ID, token, id) }
+	copied.BindCleaned = func(token string) error { return wp.db.MarkCloudLaunchCleanedToken(job.ID, token) }
 	copied.NoteCleanupFailure = func(msg string) error { return wp.db.NoteCloudLaunchRisk(job.ID, msg) }
 	return &copied
 }

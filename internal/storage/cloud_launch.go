@@ -36,14 +36,20 @@ func (db *DB) execLaunch(query string, args ...any) error {
 }
 
 func (db *DB) BeginCloudLaunch(jobID int64, workerID, token, repoURL string) error {
-	return db.execLaunch(`INSERT INTO review_job_cloud_launches (job_id, launch_token, repo_identity)
-		SELECT id, ?, ? FROM review_jobs WHERE id = ? AND status = 'running' AND worker_id = ?`,
+	return db.execLaunch(`INSERT INTO review_job_cloud_launches (job_id, launch_token, repo_identity, created_at)
+		SELECT id, ?, ?, datetime('now') FROM review_jobs WHERE id = ? AND status = 'running' AND worker_id = ?`,
 		token, repoURL, jobID, workerID)
 }
 
 func (db *DB) AttachCloudAgent(jobID int64, token, agentID string) error {
 	return db.execLaunch(`UPDATE review_job_cloud_launches SET agent_id = ?
 		WHERE job_id = ? AND launch_token = ? AND agent_id = ''`, agentID, jobID, token)
+}
+
+func (db *DB) MarkCloudLaunchCleanedToken(jobID int64, token string) error {
+	_, err := db.Exec(`UPDATE review_job_cloud_launches SET cleaned = 1
+		WHERE job_id = ? AND launch_token = ? AND cleaned = 0`, jobID, token)
+	return err
 }
 
 func (db *DB) MarkCloudLaunchCleaned(launchID int64) error {
