@@ -140,7 +140,7 @@ func holdEmptyTokenSweep(db *storage.DB, row storage.CloudLaunch, seen, noted bo
 	now := agent.CursorCloudNow()
 	since, _ := parseCloudLaunchCreated(row.CreatedAt)
 	if noted && agent.SweepAllowsClean(false, row.AgentID != "", seen, since, now, cleanDelay) {
-		return db.MarkCloudLaunchCleanedByToken(row.Token)
+		return db.MarkCloudLaunchCleanedByToken(row.JobID, row.RepoID, row.Token)
 	}
 	return reportCloudLaunchOrphan(db, row, cleanDelay)
 }
@@ -149,7 +149,7 @@ func holdListedSweep(db *storage.DB, row storage.CloudLaunch, found, seen, noted
 	now := agent.CursorCloudNow()
 	since, _ := parseCloudLaunchCreated(row.CreatedAt)
 	if noted && agent.SweepAllowsClean(found, row.AgentID != "", seen, since, now, cleanDelay) {
-		return db.MarkCloudLaunchCleanedByToken(row.Token)
+		return db.MarkCloudLaunchCleanedByToken(row.JobID, row.RepoID, row.Token)
 	}
 	if err := db.NoteCloudLaunchSweep(row.ID); err != nil {
 		return err

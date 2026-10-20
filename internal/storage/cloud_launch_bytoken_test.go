@@ -24,7 +24,7 @@ func TestMarkCloudLaunchCleanedByTokenIsolatesJobsAndTokens(t *testing.T) {
 	require.NoError(t, db.BeginCloudLaunch(jobA.ID, "w", "tok-a", repoURL))
 	require.NoError(t, db.BeginCloudLaunch(jobB.ID, "w", "tok-b", repoURL))
 
-	require.NoError(t, db.MarkCloudLaunchCleanedByToken("tok-a"))
+	require.NoError(t, db.MarkCloudLaunchCleanedByToken(jobA.ID, jobA.RepoID, "tok-a"))
 
 	var cleanedA, cleanedB int
 	require.NoError(t, db.QueryRow(`SELECT cleaned FROM review_job_cloud_launches WHERE launch_token = 'tok-a'`).Scan(&cleanedA))
@@ -38,7 +38,7 @@ func TestMarkCloudLaunchCleanedByTokenIsolatesJobsAndTokens(t *testing.T) {
 	require.NoError(t, db.BeginCloudLaunch(jobC.ID, "w", "tok-c1", repoURL))
 	require.NoError(t, db.BeginCloudLaunch(jobC.ID, "w", "tok-c2", repoURL))
 
-	require.NoError(t, db.MarkCloudLaunchCleanedByToken("tok-c1"))
+	require.NoError(t, db.MarkCloudLaunchCleanedByToken(jobC.ID, jobC.RepoID, "tok-c1"))
 
 	var cleanedC1, cleanedC2 int
 	require.NoError(t, db.QueryRow(`SELECT cleaned FROM review_job_cloud_launches WHERE launch_token = 'tok-c1'`).Scan(&cleanedC1))
