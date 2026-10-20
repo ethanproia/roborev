@@ -298,8 +298,7 @@ func TestCursorCloudDuplicateCreateBeforeCleaned(t *testing.T) {
 
 // TestCursorCloudRestartDuplicateWithoutRepoStaysUncleaned is the
 // unusable-repository branch with a saved agent id. The marker sweep cannot
-// run. The launch stays uncleaned. Job status has no orphan_warning field and
-// this path does not write an orphan-risk note. The warning is the cleanup log.
+// run. The launch stays uncleaned and the job error keeps the orphan risk.
 func TestCursorCloudRestartDuplicateWithoutRepoStaysUncleaned(t *testing.T) {
 	tc, fake := cursorCloudRestartFixture(t)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)
@@ -336,7 +335,7 @@ func TestCursorCloudRestartDuplicateWithoutRepoStaysUncleaned(t *testing.T) {
 	updated, getErr := tc.DB.GetJobByID(job.ID)
 	require.NoError(t, getErr)
 	assert.NotContains(t, updated.Error, "orphan_warning")
-	assert.NotContains(t, updated.Error, "orphan risk")
+	assert.Contains(t, updated.Error, "orphan risk")
 	require.Error(t, err)
 }
 
