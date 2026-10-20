@@ -113,7 +113,7 @@ func TestCICursorCloudUnknownIdentityDoesNotLaunch(t *testing.T) {
 		baseRepo string
 	}{
 		{name: "both empty"},
-		{name: "head empty", baseRepo: "acme/api"},
+		{name: "deleted fork", baseRepo: "acme/api"},
 		{name: "base empty", headRepo: "fork/api"},
 	}
 	for i, tc := range cases {
