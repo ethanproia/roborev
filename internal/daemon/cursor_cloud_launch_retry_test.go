@@ -226,6 +226,7 @@ func TestDeadlineExceededStillRetriesOtherAgents(t *testing.T) {
 
 func TestCursorCloudDoesNotFailOverToLocalAgent(t *testing.T) {
 	cfg := config.DefaultConfig()
+	cfg.Host = agent.CursorCloudHost
 	cfg.DefaultBackupAgent = "test"
 	pool := NewWorkerPool(nil, NewStaticConfig(cfg), 1, NewBroadcaster(), nil, nil)
 	job := &storage.ReviewJob{
@@ -233,9 +234,10 @@ func TestCursorCloudDoesNotFailOverToLocalAgent(t *testing.T) {
 		BackupAgent: "test",
 		RepoPath:    t.TempDir(),
 	}
-	assert.Equal(t, "test", pool.resolveBackupAgent(job))
+	assert.Empty(t, pool.resolveBackupAgent(job))
 
 	tc := newWorkerTestContext(t, 1)
+	tc.Pool.cfgGetter = NewStaticConfig(cfg)
 	claimed := tc.createAndClaimJobWithAgent(t, "cursor-cloud-failover", testWorkerID, agent.CursorCloudHost)
 	claimed.RepoPath = tc.TmpDir
 	claimed.BackupAgent = "test"
