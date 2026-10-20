@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/roborev/internal/agent"
+	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/cursorcloud/cursorcloudtest"
 	"go.kenn.io/roborev/internal/review"
@@ -493,6 +494,45 @@ func TestCursorCloudBadRefFailoversWithoutRetry(t *testing.T) {
 	updated := tc.assertJobStatus(t, job.ID, storage.JobStatusQueued)
 	assert.Equal(t, "test", updated.Agent)
 	assert.Equal(t, 0, updated.RetryCount)
+}
+
+func TestExplicitCursorCloudPreLaunchDoesNotFailOver(t *testing.T) {
+	t.Setenv(cursorcloud.EnvAPIKey, "cursor-test-secret")
+	tc := newWorkerTestContext(t, 1)
+	cfg := config.DefaultConfig()
+	cfg.Host = agent.CursorCloudHost
+	tc.Pool.cfgGetter = NewStaticConfig(cfg)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	job.BackupAgent = "test"
+
+	tc.Pool.processJob(testWorkerID, job)
+
+	updated := tc.assertJobStatus(t, job.ID, storage.JobStatusFailed)
+	assert.Equal(t, agent.CursorCloudHost, updated.Agent)
+	assert.Equal(t, 0, updated.RetryCount)
+	assert.NotContains(t, updated.Error, "failing over")
+}
+
+func TestExplicitCursorCloudPostSendDoesNotFailOver(t *testing.T) {
+	tc := newWorkerTestContext(t, 1)
+	cfg := config.DefaultConfig()
+	cfg.Host = agent.CursorCloudHost
+	tc.Pool.cfgGetter = NewStaticConfig(cfg)
+	job := tc.createAndClaimJobWithAgent(t, "cursor-cloud-sent", testWorkerID, agent.CursorCloudHost)
+	job.RepoPath = tc.TmpDir
+	job.BackupAgent = "test"
+	assert.Empty(t, tc.Pool.resolveBackupAgent(job))
+	err := fmt.Errorf("create agent: %w", agent.ErrCursorCloudNonRetryable)
+
+	tc.Pool.finishAgentError(context.Background(), testWorkerID, job, agent.CursorCloudHost, err, time.Minute)
+
+	updated := tc.assertJobStatus(t, job.ID, storage.JobStatusFailed)
+	assert.Equal(t, agent.CursorCloudHost, updated.Agent)
+	assert.Equal(t, 0, updated.RetryCount)
+	claimed, claimErr := tc.DB.ClaimJob(testWorkerID)
+	require.NoError(t, claimErr)
+	assert.Nil(t, claimed)
 }
 
 func TestCursorCloudPreLaunchValidationCanFailOver(t *testing.T) {
