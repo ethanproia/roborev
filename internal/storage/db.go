@@ -2431,13 +2431,9 @@ func (db *DB) ResetStaleJobs() error {
 		return err
 	}
 	now := time.Now().Format(time.RFC3339)
-	// A sent cursor-cloud create must not be queued again. Cleanup can mark
-	// the launch row cleaned before CompleteJob, and the backup can be
-	// cursor-cloud while agent is still the primary.
-	// Restart replaces a running attempt's error with the interrupted
-	// sentinel. An orphan note already stored on that row has to stay:
-	// the launch is still uncleaned, and the next recovery must not be
-	// the thing that wiped the warning.
+	// A cursor-cloud create recorded on this attempt must not be queued
+	// again. The predicate is currentAttemptCloudLaunchSQL. An orphan note
+	// already stored on the job error has to stay.
 	if _, err := db.Exec(`
 		UPDATE review_jobs
 		SET status = 'failed', worker_id = NULL, finished_at = ?,
@@ -2449,9 +2445,7 @@ func (db *DB) ResetStaleJobs() error {
 		        ELSE ?
 		    END,
 		    updated_at = ?, synced_at = NULL
-		WHERE status = 'running' AND (
-		  id IN (SELECT job_id FROM review_job_cloud_launches)
-		  OR (agent_invoked = 1 AND (agent = 'cursor-cloud' OR backup_agent = 'cursor-cloud')))
+		WHERE status = 'running' AND (`+currentAttemptCloudLaunchSQL()+`)
 	`, now, CloudLaunchInterruptedError, CloudLaunchInterruptedError, CloudLaunchInterruptedError, now); err != nil {
 		return err
 	}
