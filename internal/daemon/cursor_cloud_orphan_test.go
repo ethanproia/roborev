@@ -250,13 +250,30 @@ func cursorCloudAssertAPIWarning(t *testing.T, srv *Server, jobID int64, want bo
 	}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
 	require.Len(t, body.Jobs, 1)
+	cursorCloudAssertWarningJob(t, body.Jobs[0], want)
+
+	raw, err := json.Marshal(map[string][]int64{"job_ids": {jobID}})
+	require.NoError(t, err)
+	batchRR := serveHuma(t, srv, http.MethodPost, "/api/jobs/batch", raw)
+	require.Equal(t, http.StatusOK, batchRR.Code, batchRR.Body.String())
+	var batch struct {
+		Results map[int64]storage.JobWithReview `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(batchRR.Body.Bytes(), &batch))
+	got, ok := batch.Results[jobID]
+	require.True(t, ok)
+	cursorCloudAssertWarningJob(t, got.Job, want)
+}
+
+func cursorCloudAssertWarningJob(t *testing.T, job storage.ReviewJob, want bool) {
+	t.Helper()
 	if want {
-		assert.Contains(t, body.Jobs[0].OrphanWarning, "orphan risk")
-		assert.Contains(t, body.Jobs[0].Error, "orphan risk")
+		assert.Contains(t, job.OrphanWarning, "orphan risk")
+		assert.Contains(t, job.Error, "orphan risk")
 		return
 	}
-	assert.Empty(t, body.Jobs[0].OrphanWarning)
-	assert.NotContains(t, body.Jobs[0].Error, "orphan risk")
+	assert.Empty(t, job.OrphanWarning)
+	assert.NotContains(t, job.Error, "orphan risk")
 }
 
 func cursorCloudEmptyTokenAgent(t *testing.T, tc *workerTestContext, fake *cursorcloudtest.Fake, seed bool) (*storage.ReviewJob, string) {

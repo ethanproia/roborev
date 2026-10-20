@@ -105,6 +105,8 @@ func (db *DB) MarkCloudLaunchCleanedByToken(token string) error {
 }
 
 func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
+	// Left joins keep a launch whose job or repo was deleted. An inner join
+	// would hide that row, so restart would never stop its VM.
 	rows, err := db.Query(`SELECT l.id, l.job_id, l.launch_token, COALESCE(l.agent_id, ''), COALESCE(r.root_path, ''),
 		COALESCE(l.repo_identity, ''), COALESCE(l.created_at, ''), COALESCE(l.orphan_note, '')
 		FROM review_job_cloud_launches l
