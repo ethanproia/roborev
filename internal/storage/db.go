@@ -1610,13 +1610,11 @@ func (db *DB) migrate() error {
 }
 
 // ensureCloudLaunchTable creates the launch history table and adds columns
-// to one created before repo_identity existed. job_id is not a foreign key.
-// Deleting a job or a repo must leave the row: it is the only record of a
-// VM that may still be running. ALTER on an existing table keeps its rows;
-// a duplicate column means this process already migrated.
+// to one created before repo_identity existed. ALTER on an existing table
+// keeps its rows; a duplicate column means this process already migrated.
 func (db *DB) ensureCloudLaunchTable() error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS review_job_cloud_launches (
-		id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL,
+		id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL REFERENCES review_jobs(id) ON DELETE CASCADE,
 		launch_token TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', cleaned INTEGER NOT NULL DEFAULT 0,
 		repo_identity TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))`); err != nil {
 		return fmt.Errorf("cloud launch table: %w", err)
@@ -1631,58 +1629,6 @@ func (db *DB) ensureCloudLaunchTable() error {
 	}
 	if _, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now') WHERE created_at = ''`); err != nil {
 		return fmt.Errorf("cloud launch created_at: %w", err)
-	}
-	return db.dropCloudLaunchJobCascade()
-}
-
-// dropCloudLaunchJobCascade rebuilds a launch table that still references
-// review_jobs. ON DELETE CASCADE would remove the VM record with the job.
-func (db *DB) dropCloudLaunchJobCascade() error {
-	var tableSQL string
-	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='review_job_cloud_launches'`).Scan(&tableSQL); err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	if !strings.Contains(strings.ToUpper(tableSQL), "REFERENCES") {
-		return nil
-	}
-	ctx := context.Background()
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	defer func() { _, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`) }()
-
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	_, err = tx.Exec(`CREATE TABLE review_job_cloud_launches_keep (
-		id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL,
-		launch_token TEXT NOT NULL, agent_id TEXT NOT NULL DEFAULT '', cleaned INTEGER NOT NULL DEFAULT 0,
-		repo_identity TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '')`)
-	if err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	_, err = tx.Exec(`INSERT INTO review_job_cloud_launches_keep
-		(id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at)
-		SELECT id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at
-		FROM review_job_cloud_launches`)
-	if err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	if _, err = tx.Exec(`DROP TABLE review_job_cloud_launches`); err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	if _, err = tx.Exec(`ALTER TABLE review_job_cloud_launches_keep RENAME TO review_job_cloud_launches`); err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
-	}
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("cloud launch schema: %w", err)
 	}
 	return nil
 }
