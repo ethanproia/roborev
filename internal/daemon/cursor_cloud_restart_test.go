@@ -391,6 +391,31 @@ func TestCursorCloudRestartEmptyListStaysUncleaned(t *testing.T) {
 	assert.Contains(t, updated.Error, "orphan risk")
 }
 
+// TestCursorCloudRestartListErrorNotesAgedOrphan is a non-empty list whose
+// prompt read fails. Once the row is older than the sweep window, restart
+// still writes the orphan risk and does not mark the launch cleaned.
+func TestCursorCloudRestartListErrorNotesAgedOrphan(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	cursorCloudBeginToken(t, tc, job.ID, "launch-token-list-err")
+	cursorCloudSeedAgent(t, fake, sha, "unrelated prompt")
+	cursorCloudAgeLaunch(t, tc.DB, job.ID)
+	fake.MethodErrors = map[string]error{
+		cursorcloudtest.MethodPrompt: errors.New("prompt failed"),
+	}
+	logs := cursorCloudCaptureLog(t)
+
+	require.Error(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+	n, err := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Contains(t, logs.String(), "orphan risk")
+	updated, err := tc.DB.GetJobByID(job.ID)
+	require.NoError(t, err)
+	assert.Contains(t, updated.Error, "orphan risk")
+}
+
 // TestCursorCloudRestartUsesStoredRepoIdentity changes origin after the
 // launch row is written. Cleanup still deletes the agent from the create-time
 // repository and leaves an agent on the new remote alone.

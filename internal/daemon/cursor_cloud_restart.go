@@ -89,17 +89,20 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 		return fmt.Errorf("cursor-cloud: launch %d has no repository to sweep", row.ID)
 	}
 	found, err := agent.DeleteCursorCloudLaunchByMarker(ctx, client, daemonID, row.Token, repoURL)
-	if err != nil {
-		return err
-	}
 	// An empty list is publish lag, not a confirmed delete, even when the
-	// saved id was removed above. The row stays uncleaned until a matching
-	// agent is deleted. Past the age window the miss is an orphan risk.
+	// saved id was removed above. A non-empty list that errors is the same
+	// miss: the age window still records the orphan risk.
 	if !found {
 		if cloudLaunchAgedOut(row.CreatedAt, time.Now().UTC()) {
-			return reportCloudLaunchOrphan(db, row)
+			return errors.Join(err, reportCloudLaunchOrphan(db, row))
+		}
+		if err != nil {
+			return err
 		}
 		return fmt.Errorf("cursor-cloud: launch %d not listed yet", row.ID)
+	}
+	if err != nil {
+		return err
 	}
 	return db.MarkCloudLaunchCleaned(row.ID)
 }
