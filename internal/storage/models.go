@@ -470,6 +470,16 @@ type DaemonStatus struct {
 	WebCapabilities      []string          `json:"web_capabilities"`
 
 	AutoDesign *AutoDesignStatus `json:"auto_design,omitempty"` // Auto design review counters; nil when disabled everywhere
+	// OrphanedLaunches are uncleaned cloud launches whose job row is gone.
+	// Job status cannot show them; GET /api/status can.
+	OrphanedLaunches []OrphanedCloudLaunch `json:"orphaned_launches,omitempty"`
+}
+
+// OrphanedCloudLaunch is one failed-cleanup launch left after its job was deleted.
+type OrphanedCloudLaunch struct {
+	JobID      int64  `json:"job_id"`
+	AgentID    string `json:"agent_id,omitempty"`
+	OrphanNote string `json:"orphan_note"`
 }
 
 // HealthStatus represents the overall daemon health

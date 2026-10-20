@@ -2293,6 +2293,12 @@ func (s *Server) humaGetStatus(
 			fmt.Sprintf("get queue paused state: %v", err),
 		)
 	}
+	orphaned, err := s.db.ListOrphanedCloudLaunches()
+	if err != nil {
+		return nil, huma.Error500InternalServerError(
+			fmt.Sprintf("list orphaned cloud launches: %v", err),
+		)
+	}
 
 	s.endpointMu.Lock()
 	ep := s.endpoint
@@ -2321,6 +2327,7 @@ func (s *Server) humaGetStatus(
 		ConfigReloadedAt:    configReloadedAt,
 		ConfigReloadCounter: configReloadCounter,
 		WebCapabilities:     []string{"review-projection-v1", "analytics-v1"},
+		OrphanedLaunches:    orphaned,
 	}
 	updateDraining, updatePolicy, updateExpiresAt := s.updateDrainStatus()
 	resp.Body.UpdateDraining = updateDraining

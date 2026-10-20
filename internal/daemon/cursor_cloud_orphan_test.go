@@ -322,6 +322,26 @@ func cursorCloudCleanToken(t *testing.T, db *storage.DB, token string) {
 	require.NoError(t, db.MarkCloudLaunchCleanedByToken(token))
 }
 
+func TestStatusShowsOrphanNoteAfterJobAndRepoDelete(t *testing.T) {
+	tc := newWorkerTestContext(t, 1)
+	srv := newServerWithLogs(tc.DB, config.DefaultConfig(), "", newTestErrorLog(), newTestActivityLog())
+	t.Cleanup(func() { _ = srv.Close() })
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	require.NoError(t, tc.DB.BeginCloudLaunch(job.ID, testWorkerID, "status-orphan-tok", cursorCloudRestartRepo))
+	require.NoError(t, tc.DB.AttachCloudAgent(job.ID, "status-orphan-tok", "bc_leaked"))
+	require.NoError(t, tc.DB.DeleteRepo(tc.Repo.ID, true))
+
+	rr := serveHuma(t, srv, http.MethodGet, "/api/status", nil)
+	require.Equal(t, http.StatusOK, rr.Code, rr.Body.String())
+	var status storage.DaemonStatus
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &status))
+	require.Len(t, status.OrphanedLaunches, 1)
+	assert.Equal(t, job.ID, status.OrphanedLaunches[0].JobID)
+	assert.Equal(t, "bc_leaked", status.OrphanedLaunches[0].AgentID)
+	assert.Equal(t, storage.CloudLaunchPendingNote, status.OrphanedLaunches[0].OrphanNote)
+}
+
 func TestBatchJobStatusShowsLaunchOrphanWarning(t *testing.T) {
 	tc := newWorkerTestContext(t, 1)
 	srv := newServerWithLogs(tc.DB, config.DefaultConfig(), "", newTestErrorLog(), newTestActivityLog())
