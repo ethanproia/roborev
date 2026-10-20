@@ -830,7 +830,7 @@ func TestCursorCloudDialErrorDoesNotReconcile(t *testing.T) {
 		context.Background(), t.TempDir(), "0123456789abcdef0123456789abcdef01234567", "prompt", nil,
 	)
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrCursorCloudNonRetryable)
+	require.NotErrorIs(t, err, ErrCursorCloudNonRetryable)
 	assert.Zero(t, client.lists)
 }
 
@@ -839,6 +839,7 @@ type dialFailCloud struct{ lists int }
 func (d *dialFailCloud) CreateAgent(context.Context, cursorcloud.CreateAgentRequest) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")}
 }
+
 func (d *dialFailCloud) GetAgent(context.Context, string) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, nil
 }
@@ -928,7 +929,7 @@ func TestCursorCloudAmbiguousCreateIsReconciled(t *testing.T) {
 				RepoURL: repo,
 			}).Review(context.Background(), t.TempDir(), sha, "review the change", nil)
 			require.Error(t, err)
-			assert.ErrorIs(t, err, ErrCursorCloudNonRetryable)
+			require.ErrorIs(t, err, ErrCursorCloudNonRetryable)
 			mu.Lock()
 			defer mu.Unlock()
 			assert.Equal(t, 1, posts)
