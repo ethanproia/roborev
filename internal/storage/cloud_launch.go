@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -104,4 +105,15 @@ func (db *DB) CountUncleanedCloudLaunches(jobID int64) (int, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(*) FROM review_job_cloud_launches WHERE job_id = ? AND cleaned = 0`, jobID).Scan(&n)
 	return n, err
+}
+
+// MarkCloudLaunchCleanedByToken marks one launch cleaned. The caller has
+// already observed a nil or 404 delete for every VM this token could own.
+func (db *DB) MarkCloudLaunchCleanedByToken(jobID int64, token string) error {
+	token = strings.TrimSpace(token)
+	if jobID == 0 || token == "" {
+		return fmt.Errorf("cursor-cloud: launch token is incomplete")
+	}
+	return db.execLaunch(`UPDATE review_job_cloud_launches SET cleaned = 1
+		WHERE job_id = ? AND launch_token = ? AND cleaned = 0`, jobID, token)
 }
