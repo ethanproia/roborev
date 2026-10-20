@@ -2,15 +2,21 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/roborev/internal/agent"
+	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/testenv"
 	"go.kenn.io/roborev/internal/testutil"
 )
@@ -110,6 +116,55 @@ func (h *reviewHarness) run(opts runOpts) error {
 	}
 
 	return h.runCmd(args...)
+}
+
+func TestLocalReviewRefusesCursorCloudHost(t *testing.T) {
+	var httpCalls atomic.Int32
+	var launchRows atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		httpCalls.Add(1)
+	}))
+	t.Cleanup(srv.Close)
+
+	prev, err := agent.Get(agent.CursorCloudHost)
+	require.NoError(t, err)
+	cloud := &agent.CursorCloudAgent{
+		Client:  cursorcloud.NewHTTPClient("cursor-test-secret-not-real", cursorcloud.WithBaseURL(srv.URL)),
+		RepoURL: "https://github.com/example/repo.git",
+	}
+	if field := reflect.ValueOf(cloud).Elem().FieldByName("BindLaunch"); field.IsValid() && field.CanSet() {
+		field.Set(reflect.MakeFunc(field.Type(), func([]reflect.Value) []reflect.Value {
+			launchRows.Add(1)
+			return []reflect.Value{reflect.Zero(field.Type().Out(0))}
+		}))
+	}
+	agent.Register(cloud)
+	t.Cleanup(func() { agent.Register(prev) })
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		cfg  string
+	}{
+		{name: "--host", args: []string{"--host", agent.CursorCloudHost}},
+		{name: "repo host", cfg: "host = \"cursor-cloud\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			httpCalls.Store(0)
+			launchRows.Store(0)
+			t.Setenv(cursorcloud.EnvAPIKey, "cursor-test-secret-not-real")
+			t.Setenv(agent.EnvDefaultHost, "")
+			t.Setenv("ROBOREV_TELEMETRY_ENABLED", "0")
+			h := newReviewHarness(t)
+			if tc.cfg != "" {
+				h.writeConfig(tc.cfg)
+			}
+			err := h.runCmd(append([]string{"--local", "--repo", h.Dir, "--quiet"}, tc.args...)...)
+			require.ErrorContains(t, err, "--local cannot use a cursor-cloud host")
+			assert.Equal(t, int32(0), httpCalls.Load())
+			assert.Equal(t, int32(0), launchRows.Load())
+		})
+	}
 }
 
 func TestLocalReviewFlag(t *testing.T) {
