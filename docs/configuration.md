@@ -1199,12 +1199,13 @@ review ends, on success, error, timeout, and cancellation. The v0 stop call
 pauses the VM. The v0 delete docs do not say that delete ends billing. A create
 that fails after it is sent, and returns no id, is found by a token in the
 prompt and stopped and deleted the same way. v0 launch has no idempotency key. A
-delete failure is logged and reported, and the review result stays the one the
-agent returned. Userinfo, `access_token` query values, and unparseable
-credential URLs are removed before the repository URL is sent or stored. A dirty
-or range review cannot use `cursor-cloud` and is not rewritten to a local agent.
-Goal reviews and fix jobs stay on the local agent. A CI matrix on `cursor-cloud`
-launches one cloud agent.
+delete failure is logged and reported. When the review itself succeeded, that
+failure is returned as a non-retryable error instead of the agent's text.
+Userinfo, `access_token` query values, and unparseable credential URLs are
+removed before the repository URL is sent or stored. A dirty or range review
+cannot use `cursor-cloud` and is not rewritten to a local agent. Goal reviews
+and fix jobs stay on the local agent. A CI matrix on `cursor-cloud` launches one
+cloud agent.
 
 Launch limits are checked before the agent is created. The defaults are 4
 concurrent launches and 60 launches in a rolling hour. 4 matches the default
