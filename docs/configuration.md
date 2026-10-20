@@ -1191,6 +1191,14 @@ requires `ROBOREV_HOST_AGENT=1`. An explicit `cursor-cloud` without
 `CURSOR_API_KEY` is an error; roborev does not fall back to a local agent. An
 explicit `host` without `ROBOREV_HOST_AGENT=1` is the same kind of error.
 
+An explicit cursor-cloud host never falls back to a local agent. Explicit means
+`host = "cursor-cloud"` in the repo or global config. `--host cursor-cloud` is
+also explicit at enqueue, but the job does not store that flag. The worker
+treats a configured `host = "cursor-cloud"` as explicit. When only
+`ROBOREV_DEFAULT_HOST` selects cursor-cloud, a non-cloud backup may still run. A
+pre-launch refusal and a failure after the create is sent both fail the job when
+the host is explicit.
+
 The cloud review is created at the exact commit SHA and polled until it
 finishes. `CREATING` and any other unknown status stay in progress. The agent's
 final assistant message is the review. A finished agent with no assistant
