@@ -944,6 +944,143 @@ func TestEmptyTokenUpgradeStaysUncleanedWithoutConfirmedDelete(t *testing.T) {
 	assert.Empty(t, cursorCloudCallIDs(fake, cursorcloudtest.MethodDelete))
 }
 
+// TestCursorCloudRestartNotesAgedSavedAgentUnusableRepo is the saved-id
+// age pin. The repository cannot be listed, created_at is past the sweep
+// window, and the row already has an agent id. Recovery writes the
+// age-based orphan report and does not mark the row cleaned. Dropping
+// that aged report leaves only the younger sweep note.
+func TestCursorCloudRestartNotesAgedSavedAgentUnusableRepo(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	const token = "launch-token-aged-saved-unusable"
+	cursorCloudPersistAttempt(t, tc, fake, job.ID, token, true)
+	_, err := tc.DB.Exec(`UPDATE review_job_cloud_launches SET repo_identity = '' WHERE job_id = ?`, job.ID)
+	require.NoError(t, err)
+	_, err = tc.DB.Exec(`UPDATE repos SET root_path = ? WHERE id = ?`, t.TempDir(), job.RepoID)
+	require.NoError(t, err)
+	cursorCloudAgeLaunch(t, tc.DB, job.ID)
+
+	require.Error(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+
+	var cleaned int
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT cleaned FROM review_job_cloud_launches WHERE job_id = ? AND launch_token = ?`,
+		job.ID, token,
+	).Scan(&cleaned))
+	assert.Equal(t, 0, cleaned)
+	var storedErr string
+	require.NoError(t, tc.DB.QueryRow(`SELECT COALESCE(error, '') FROM review_jobs WHERE id = ?`, job.ID).Scan(&storedErr))
+	assert.Contains(t, storedErr, "was not listed within")
+	assert.Contains(t, storedErr, "orphan risk")
+}
+
+// TestCursorCloudRestartMarkerSweepErrorKeepsSavedAgent is the fail-closed
+// pin. The saved id deletes, then the marker list fails. The launch stays
+// uncleaned. Ignoring that list error marks the row cleaned.
+func TestCursorCloudRestartMarkerSweepErrorKeepsSavedAgent(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	const token = "launch-token-sweep-err"
+	created := cursorCloudPersistAttempt(t, tc, fake, job.ID, token, true)
+	fake.MethodErrors = map[string]error{
+		cursorcloudtest.MethodList: &cursorcloud.APIError{
+			Op: "list agents", StatusCode: http.StatusTooManyRequests, Message: "too many requests",
+		},
+	}
+
+	err := recoverStaleJobs(context.Background(), tc.DB, fake)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "cleanup list")
+	_, getErr := fake.GetAgent(t.Context(), created.ID)
+	require.Error(t, getErr)
+	n, countErr := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, countErr)
+	assert.Equal(t, 1, n)
+}
+
+// TestCursorCloudRestartByTokenCleansSharedToken is the restart success
+// path. One confirmed sweep cleans every uncleaned row for that token,
+// including a second row on the same job. Cleaning only the swept row id
+// leaves the sibling uncleaned and keeps its note.
+func TestCursorCloudRestartByTokenCleansSharedToken(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	const token = "launch-token-bytoken-success"
+	created := cursorCloudPersistAttempt(t, tc, fake, job.ID, token, true)
+	_, err := tc.DB.Exec(`INSERT INTO review_job_cloud_launches
+		(job_id, launch_token, agent_id, repo_identity, orphan_note, cleaned, created_at)
+		VALUES (?, ?, '', ?, 'cursor-cloud orphan risk: sibling', 0, datetime('now'))`,
+		job.ID, token, cursorCloudRestartRepo)
+	require.NoError(t, err)
+	rows, err := tc.DB.ListUncleanedCloudLaunches()
+	require.NoError(t, err)
+	var primary storage.CloudLaunch
+	for _, row := range rows {
+		if row.AgentID == created.ID {
+			primary = row
+		}
+	}
+	require.NotZero(t, primary.ID)
+	machineID, err := tc.DB.GetMachineID()
+	require.NoError(t, err)
+
+	require.NoError(t, recoverOneCloudLaunch(context.Background(), tc.DB, fake, machineID.String(), primary)) //nolint:forbidigo // launch marker is prompt text
+
+	var cleanedPrimary, cleanedSibling int
+	var noteSibling string
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT cleaned FROM review_job_cloud_launches WHERE id = ?`, primary.ID,
+	).Scan(&cleanedPrimary))
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT cleaned, orphan_note FROM review_job_cloud_launches WHERE launch_token = ? AND id != ?`,
+		token, primary.ID,
+	).Scan(&cleanedSibling, &noteSibling))
+	assert.Equal(t, 1, cleanedPrimary)
+	assert.Equal(t, 1, cleanedSibling)
+	assert.Empty(t, noteSibling)
+}
+
+// TestCloudLaunchOrphanNoteSurvivesRestart reopens the database and runs
+// recovery. The uncleaned row's orphan_note and the job error that already
+// names the orphan both survive. Resetting the job error to only the
+// interrupted sentinel drops the kept text.
+func TestCloudLaunchOrphanNoteSurvivesRestart(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	const token = "launch-token-note-survives"
+	const kept = "cursor-cloud orphan risk: kept-across-restart"
+	cursorCloudPersistAttempt(t, tc, fake, job.ID, token, true)
+	_, err := tc.DB.Exec(`UPDATE review_job_cloud_launches SET orphan_note = ?, repo_identity = '' WHERE job_id = ?`, kept, job.ID)
+	require.NoError(t, err)
+	_, err = tc.DB.Exec(`UPDATE review_jobs SET error = ? WHERE id = ?`, kept, job.ID)
+	require.NoError(t, err)
+	_, err = tc.DB.Exec(`UPDATE repos SET root_path = ? WHERE id = ?`, t.TempDir(), job.RepoID)
+	require.NoError(t, err)
+
+	var dbPath string
+	require.NoError(t, tc.DB.QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&dbPath))
+	require.NoError(t, tc.DB.Close())
+	reopened, err := storage.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	require.Error(t, recoverStaleJobs(context.Background(), reopened, fake))
+
+	var cleaned int
+	var note, storedErr string
+	require.NoError(t, reopened.QueryRow(
+		`SELECT cleaned, orphan_note FROM review_job_cloud_launches WHERE launch_token = ?`, token,
+	).Scan(&cleaned, &note))
+	require.NoError(t, reopened.QueryRow(`SELECT COALESCE(error, '') FROM review_jobs WHERE id = ?`, job.ID).Scan(&storedErr))
+	assert.Equal(t, 0, cleaned)
+	assert.Equal(t, kept, note)
+	assert.Contains(t, storedErr, kept)
+}
+
 func cursorCloudRestartFixture(t *testing.T) (*workerTestContext, *cursorcloudtest.Fake) {
 	t.Helper()
 	tc := newWorkerTestContext(t, 1)
