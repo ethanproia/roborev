@@ -1763,6 +1763,12 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, storage.EnqueueOpts{}, fmt.Errorf("prebuild prompt for %s#%d canceled: %w", in.ghRepo, in.prNumber, err)
 			}
+			// cursor-cloud rejects the frozen range ref, so its job ref is the
+			// head commit. The range review lives only in this prebuilt prompt.
+			// Queueing without it would review the head commit alone.
+			if agent.CanonicalName(m.Agent) == agent.CursorCloudHost {
+				return nil, storage.EnqueueOpts{}, fmt.Errorf("cursor-cloud CI review needs the prebuilt pull request range prompt: %w", err)
+			}
 			log.Printf("CI poller: failed to prebuild prompt for %s#%d (member=%s, agent=%s): %v; enqueuing without stored prompt",
 				in.ghRepo, in.prNumber, m.Name, m.Agent, err)
 			if in.cfg.CI.Personal.Enabled {
@@ -1772,6 +1778,17 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 		}
 		if in.cfg.CI.Personal.Enabled && strings.TrimSpace(storedPrompt) == "" {
 			return nil, storage.EnqueueOpts{}, fmt.Errorf("personal review prompt is empty")
+		}
+		if agent.CanonicalName(m.Agent) == agent.CursorCloudHost && strings.TrimSpace(storedPrompt) == "" {
+			return nil, storage.EnqueueOpts{}, fmt.Errorf("cursor-cloud CI review prompt is empty")
+		}
+		gitRef := in.gitRef
+		if agent.CanonicalName(m.Agent) == agent.CursorCloudHost {
+			head, refErr := cursorCloudCIRef(in.gitRef)
+			if refErr != nil {
+				return nil, storage.EnqueueOpts{}, refErr
+			}
+			gitRef = head
 		}
 		acpSnapshot, err := snapshotACPExecutionConfig(
 			in.repoCfg, in.cfg, m.Agent, m.BackupAgent,
@@ -1793,7 +1810,7 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 		}
 		memberOpts = append(memberOpts, storage.EnqueueOpts{
 			RepoID:                in.repo.ID,
-			GitRef:                in.gitRef,
+			GitRef:                gitRef,
 			Branch:                in.branch,
 			CIBaseBranch:          in.baseBranch,
 			Agent:                 m.Agent,
