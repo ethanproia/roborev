@@ -1752,4 +1752,21 @@ func (p *PgPool) ensureLocalCloudLaunchTable(ctx context.Context) {
 		WHERE NOT cleaned AND orphan_note = ''`, CloudLaunchPendingNote); err != nil {
 		log.Printf("cursor-cloud: orphan note backfill: %v", err)
 	}
+	// Older builds created this table with ON DELETE CASCADE. Dropping the
+	// job must not drop the launch row. Rows are not rewritten.
+	if _, err := p.pool.Exec(ctx, `DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT n.nspname, c.relname, con.conname
+    FROM pg_constraint con
+    JOIN pg_class c ON c.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'review_job_cloud_launches' AND con.contype = 'f'
+  LOOP
+    EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', r.nspname, r.relname, r.conname);
+  END LOOP;
+END $$`); err != nil {
+		log.Printf("cursor-cloud: drop launch foreign key: %v", err)
+	}
 }
