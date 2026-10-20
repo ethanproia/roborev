@@ -2449,7 +2449,7 @@ func (db *DB) ResetStaleJobs() error {
 		SET status = 'failed', worker_id = NULL, finished_at = ?, error = `+jobErrorKeepNote("?")+`,
 		    updated_at = ?, synced_at = NULL
 		WHERE status = 'running' AND (`+currentAttemptCloudLaunchSQL()+`)
-	`, now, CloudLaunchInterruptedError, now); err != nil {
+	`, now, CloudLaunchInterruptedError, CloudLaunchInterruptedError, CloudLaunchInterruptedError, now); err != nil {
 		return err
 	}
 	_, err := db.Exec(`

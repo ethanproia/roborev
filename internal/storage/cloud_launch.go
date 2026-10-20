@@ -232,7 +232,7 @@ func (db *DB) FailSentCloudLaunch(jobID int64, workerID string) (bool, error) {
 		    updated_at = ?, synced_at = NULL
 		WHERE id = ? AND status = 'running' AND worker_id = ?
 		  AND (`+currentAttemptCloudLaunchSQL()+`)`,
-		now, CloudLaunchInterruptedError, now, jobID, workerID)
+		now, CloudLaunchInterruptedError, CloudLaunchInterruptedError, CloudLaunchInterruptedError, now, jobID, workerID)
 	if err != nil {
 		return false, err
 	}
