@@ -992,7 +992,7 @@ func TestCursorCloudRestartMarkerSweepErrorKeepsSavedAgent(t *testing.T) {
 
 	err := recoverStaleJobs(context.Background(), tc.DB, fake)
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "cleanup list")
+	require.ErrorContains(t, err, "cleanup list")
 	_, getErr := fake.GetAgent(t.Context(), created.ID)
 	require.Error(t, getErr)
 	n, countErr := tc.DB.CountUncleanedCloudLaunches(job.ID)
