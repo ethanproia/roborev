@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/roborev/internal/agent"
+	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/cursorcloud/cursorcloudtest"
 	"go.kenn.io/roborev/internal/testutil"
@@ -386,4 +388,28 @@ func TestEmptyTokenSweepFillsEmptyRowNote(t *testing.T) {
 	assert.NotEmpty(t, after)
 	assert.Contains(t, after, "no launch token")
 	assert.Equal(t, 0, cursorCloudCleanedFlag(t, tc, job.ID))
+}
+
+// TestEmptyTokenOrphanReasonWording pins the sentence stored for a launch
+// that has no token. The delay value is the one the pass resolved.
+func TestEmptyTokenOrphanReasonWording(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	cursorCloudInsertBareLaunch(t, tc, job.ID, "", "")
+	var launchID int64
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT id FROM review_job_cloud_launches WHERE job_id = ?`, job.ID,
+	).Scan(&launchID))
+
+	require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+	delay := config.ResolveCloudLaunchCleanDelay(tc.TmpDir, nil)
+	want := fmt.Sprintf("cursor-cloud orphan risk: job %d launch %d has no launch token to list within cloud_launch_clean_delay_hours (%s)", job.ID, launchID, delay)
+	var note, jobErr string
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT orphan_note FROM review_job_cloud_launches WHERE id = ?`, launchID,
+	).Scan(&note))
+	require.NoError(t, tc.DB.QueryRow(`SELECT COALESCE(error, '') FROM review_jobs WHERE id = ?`, job.ID).Scan(&jobErr))
+	assert.Equal(t, want, note)
+	assert.Contains(t, jobErr, want)
 }
