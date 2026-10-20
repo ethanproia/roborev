@@ -1754,6 +1754,7 @@ type stampListCloud struct {
 func (c *stampListCloud) CreateAgent(context.Context, cursorcloud.CreateAgentRequest) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, nil
 }
+
 func (c *stampListCloud) GetAgent(context.Context, string) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, nil
 }
@@ -1789,14 +1790,17 @@ func (c *budgetListCloud) UserPrompt(ctx context.Context, _ string) (string, err
 	}
 	return c.text, nil
 }
+
 func (c *budgetListCloud) StopAgent(context.Context, string) error {
 	c.ops = append(c.ops, "stop")
 	return nil
 }
+
 func (c *budgetListCloud) DeleteAgent(context.Context, string) error {
 	c.ops = append(c.ops, "delete")
 	return nil
 }
+
 func (c *budgetListCloud) ListAgents(ctx context.Context) ([]cursorcloud.Agent, error) {
 	timer := time.NewTimer(c.listDelay)
 	defer timer.Stop()
@@ -1828,9 +1832,11 @@ func (c *conversationLimitCloud) CreateAgent(context.Context, cursorcloud.Create
 func (c *conversationLimitCloud) GetAgent(context.Context, string) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, nil
 }
+
 func (c *conversationLimitCloud) FinalMessage(context.Context, string) (string, error) {
 	return "", nil
 }
+
 func (c *conversationLimitCloud) UserPrompt(context.Context, string) (string, error) {
 	c.prompts++
 	return "", &cursorcloud.APIError{Op: "conversation", StatusCode: http.StatusTooManyRequests, Message: "slow down"}
@@ -1839,6 +1845,7 @@ func (c *conversationLimitCloud) StopAgent(context.Context, string) error { retu
 func (c *conversationLimitCloud) DeleteAgent(context.Context, string) error {
 	return nil
 }
+
 func (c *conversationLimitCloud) ListAgents(context.Context) ([]cursorcloud.Agent, error) {
 	c.lists++
 	return []cursorcloud.Agent{

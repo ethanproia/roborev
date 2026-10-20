@@ -1504,6 +1504,7 @@ func (s *Server) humaListJobs(
 		resp := &ListJobsOutput{}
 		job.WebURL = s.reviewBrowserURL(job.ID)
 		resp.Body.Jobs = []storage.ReviewJob{*job}
+		s.db.AttachLaunchOrphanWarnings(resp.Body.Jobs)
 		renderFixPlanPrompts(resp.Body.Jobs)
 		if !remoteScoped(ctx) {
 			attachPanelSummaries(s.db, resp.Body.Jobs)
@@ -1793,6 +1794,7 @@ func (s *Server) humaListJobs(
 	for i := range jobs {
 		jobs[i].WebURL = s.reviewBrowserURL(jobs[i].ID)
 	}
+	s.db.AttachLaunchOrphanWarnings(jobs)
 	resp.Body.Jobs = jobs
 	resp.Body.HasMore = hasMore
 	resp.Body.NextCursor = nextCursor
