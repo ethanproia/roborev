@@ -478,6 +478,16 @@ func (wp *WorkerPool) handleUpdateInterruptionLocked(
 	if !targeted {
 		return false
 	}
+	// A sent cursor-cloud create must not be queued again.
+	failedSent, err := wp.db.FailSentCloudLaunch(job.ID, workerID)
+	if err != nil {
+		log.Printf("[%s] Error failing sent cursor-cloud launch for update-interrupted job %d: %v", workerID, job.ID, err)
+		return true
+	}
+	if failedSent {
+		log.Printf("[%s] cursor-cloud sent launch for job %d was not requeued", workerID, job.ID)
+		return true
+	}
 	requeued, err := wp.db.RequeueUpdateInterruptedJob(job.ID, workerID)
 	if err != nil {
 		log.Printf("[%s] Error requeueing update-interrupted job %d: %v", workerID, job.ID, err)
@@ -695,6 +705,26 @@ func reviewJobUsesStructuredOutput(job *storage.ReviewJob) bool {
 // a job that fails a gate is never counted as an agent run. This is the synced
 // cost-eligibility signal (and stores the command line for TUI display); a
 // failed write only under-reports cost, so it is logged, not fatal.
+func (wp *WorkerPool) bindCursorCloudLaunch(workerID string, job *storage.ReviewJob, a agent.Agent) agent.Agent {
+	cloud, ok := a.(*agent.CursorCloudAgent)
+	if !ok || cloud == nil || job == nil {
+		return a
+	}
+	copied := *cloud
+	machineID, err := wp.db.GetMachineID()
+	if err != nil {
+		copied.BindLaunch = func(string, string) error { return err }
+		return &copied
+	}
+	copied.DaemonID = machineID.String() //nolint:forbidigo // launch marker is prompt text
+	copied.BindLaunch = func(token, repoURL string) error {
+		return wp.db.BeginCloudLaunch(job.ID, workerID, token, repoURL)
+	}
+	copied.BindAgent = func(token, id string) error { return wp.db.AttachCloudAgent(job.ID, token, id) }
+	copied.NoteCleanupFailure = func(msg string) error { return wp.db.NoteCloudLaunchRisk(job.ID, msg) }
+	return &copied
+}
+
 func (wp *WorkerPool) markAgentInvoked(workerID string, job *storage.ReviewJob, a agent.Agent) {
 	wp.markAgentInvokedWithCommandLine(workerID, job, a.CommandLine())
 }
@@ -1351,6 +1381,7 @@ func (wp *WorkerPool) processJob(workerID string, job *storage.ReviewJob) {
 			defer preparedPrompt.Cleanup()
 		}
 		reviewPrompt = preparedPrompt.Prompt
+		a = wp.bindCursorCloudLaunch(workerID, job, a)
 		wp.markAgentInvoked(workerID, job, a)
 		if planningPrompt != "" {
 			implementationInvoked = true
