@@ -82,6 +82,12 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 		if row.AgentID != "" {
 			return db.MarkCloudLaunchCleaned(row.ID)
 		}
+		// Nothing to list. A token-only row can still have a live VM, so age
+		// created_at into the same 24h orphan note as a missed list. The row
+		// stays uncleaned. NoteCloudLaunchRisk is the NoteCleanupFailure path.
+		if cloudLaunchAgedOut(row.CreatedAt, time.Now().UTC()) {
+			return reportCloudLaunchOrphan(db, row)
+		}
 		return fmt.Errorf("cursor-cloud: launch %d has no repository to sweep", row.ID)
 	}
 	found, err := agent.DeleteCursorCloudLaunchByMarker(ctx, client, daemonID, row.Token, repoURL)
