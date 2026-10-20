@@ -161,6 +161,35 @@ func TestIntegration_EnsureSchema_UpgradesE387CloudLaunches(t *testing.T) { //no
 	assert.Equal(pgCloudLaunchFingerprint(t, ctx, pool), upgraded)
 }
 
+func TestIntegration_EnsureSchema_V24(t *testing.T) { //nolint:paralleltest // shares the roborev schema in the PostgreSQL database at TEST_POSTGRES_URL
+	pool := openTestPgPoolRawAtVersion(t, 23)
+	ctx := t.Context()
+	t.Cleanup(func() {
+		_, _ = pool.pool.Exec(context.Background(), `DELETE FROM roborev.schema_version WHERE version = 24`)
+	})
+
+	require.NoError(t, pool.EnsureSchema(ctx))
+
+	var version int
+	require.NoError(t, pool.pool.QueryRow(ctx, `SELECT MAX(version) FROM roborev.schema_version`).Scan(&version))
+	assert.Equal(t, 23, version)
+	assert.Equal(t, 23, pgSchemaVersion)
+	var written int
+	require.NoError(t, pool.pool.QueryRow(ctx, `SELECT COUNT(*) FROM roborev.schema_version WHERE version = 24`).Scan(&written))
+	assert.Equal(t, 0, written)
+
+	cols := pgColumnNames(t, ctx, pool, "review_job_cloud_launches")
+	assert.Contains(t, cols, "created_at")
+	assert.Contains(t, cols, "repo_identity")
+	assert.Contains(t, cols, "orphan_note")
+
+	_, err := pool.pool.Exec(ctx, `INSERT INTO roborev.schema_version (version) VALUES (24)`)
+	require.NoError(t, err)
+	err = pool.EnsureSchema(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "schema version 24 is newer")
+}
+
 func insertE387Job(t *testing.T, ctx context.Context, pool *PgPool, repoID int64, machineID uuid.UUID, enqueued time.Time, started *time.Time) int64 {
 	t.Helper()
 	var id int64
