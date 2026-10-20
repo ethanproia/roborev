@@ -41,7 +41,12 @@ func recoverCloudLaunches(ctx context.Context, db *storage.DB, client cursorclou
 		return err
 	}
 	if client == nil {
-		return fmt.Errorf("cursor-cloud: %d interrupted launch(es) have no client", len(rows))
+		var errs []error
+		for _, row := range rows {
+			errs = append(errs, noteRestartClientFailure(db, row))
+		}
+		errs = append(errs, fmt.Errorf("cursor-cloud: %d interrupted launch(es) have no client", len(rows)))
+		return errors.Join(errs...)
 	}
 	machineID, err := db.GetMachineID()
 	if err != nil {
@@ -103,7 +108,10 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	}
 	found, err := agent.DeleteCursorCloudLaunchByMarker(ctx, client, daemonID, row.Token, repoURL)
 	if err != nil {
-		return err
+		if agent.CursorCloudCleanupOp(err) == "list" {
+			return noteRestartListFailure(db, row, err)
+		}
+		return noteRestartSweepFailure(db, row, err)
 	}
 	// The saved id's delete already returned. That alone does not clean,
 	// including through MarkCloudLaunchCleanedByToken. The marker sweep
@@ -126,6 +134,24 @@ func cloudLaunchAgedOut(createdAt string, now time.Time) bool {
 		}
 	}
 	return !created.Add(cloudLaunchMaxAge).After(now)
+}
+
+func noteRestartClientFailure(db *storage.DB, row storage.CloudLaunch) error {
+	msg := fmt.Sprintf("cursor-cloud orphan risk: pending cleanup: no client for launch %d", row.ID)
+	log.Print(msg)
+	return db.RecordUncleanedLaunchNote(row.JobID, msg)
+}
+
+func noteRestartListFailure(db *storage.DB, row storage.CloudLaunch, cause error) error {
+	msg := fmt.Sprintf("cursor-cloud orphan risk: pending cleanup: list: %v", cause)
+	log.Print(msg)
+	return errors.Join(cause, db.RecordUncleanedLaunchNote(row.JobID, msg))
+}
+
+func noteRestartSweepFailure(db *storage.DB, row storage.CloudLaunch, cause error) error {
+	msg := fmt.Sprintf("cursor-cloud orphan risk: pending cleanup: sweep: %v", cause)
+	log.Print(msg)
+	return errors.Join(cause, db.RecordUncleanedLaunchNote(row.JobID, msg))
 }
 
 func reportCloudLaunchOrphan(db *storage.DB, row storage.CloudLaunch) error {

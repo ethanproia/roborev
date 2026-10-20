@@ -2434,12 +2434,12 @@ func (db *DB) ResetStaleJobs() error {
 	// cursor-cloud while agent is still the primary.
 	if _, err := db.Exec(`
 		UPDATE review_jobs
-		SET status = 'failed', worker_id = NULL, finished_at = ?, error = ?,
+		SET status = 'failed', worker_id = NULL, finished_at = ?, error = `+jobErrorKeepNote("?")+`,
 		    updated_at = ?, synced_at = NULL
 		WHERE status = 'running' AND (
 		  id IN (SELECT job_id FROM review_job_cloud_launches)
 		  OR (agent_invoked = 1 AND (agent = 'cursor-cloud' OR backup_agent = 'cursor-cloud')))
-	`, now, CloudLaunchInterruptedError, now); err != nil {
+	`, now, CloudLaunchInterruptedError, CloudLaunchInterruptedError, CloudLaunchInterruptedError, now); err != nil {
 		return err
 	}
 	_, err := db.Exec(`
