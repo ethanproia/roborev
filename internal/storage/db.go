@@ -1633,8 +1633,8 @@ func (db *DB) ensureCloudLaunchTable() error {
 	if _, err := db.Exec(`UPDATE review_job_cloud_launches SET launch_token = '' WHERE launch_token IS NULL`); err != nil {
 		return fmt.Errorf("cloud launch token: %w", err)
 	}
-	if _, err := db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now') WHERE created_at = ''`); err != nil {
-		return fmt.Errorf("cloud launch created_at: %w", err)
+	if err := db.backfillCloudLaunchCreatedAt(); err != nil {
+		return err
 	}
 	// Rows written before orphan_note existed come back with an empty marker.
 	// Recovery lists cleaned = 0, and the warning is the marker, so an uncleaned
