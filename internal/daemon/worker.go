@@ -1683,6 +1683,13 @@ func (wp *WorkerPool) failOrRetryAgentExecutionContext(
 	agentName string,
 	executionErr error,
 ) {
+	// Same sentinel as the processJob deadline branch. A 429 is classified
+	// as transient from its text and would reach RetryJob if this ran only
+	// when the classification is LimitKindNone.
+	if errors.Is(executionErr, agent.ErrCursorCloudNonRetryable) {
+		wp.failCursorCloudWithoutRetry(workerID, job, agentName, executionErr)
+		return
+	}
 	// A review that ran but produced no verdict (typically an unreadable
 	// diff) is deterministic for that agent: retrying it wastes runs. Fail
 	// over to the backup agent at once, or fail with the agent output kept
@@ -1690,14 +1697,6 @@ func (wp *WorkerPool) failOrRetryAgentExecutionContext(
 	if noVerdict, ok := errors.AsType[*review.NoVerdictError](executionErr); ok {
 		wp.failoverOrFailNonRetryableAgentContext(
 			ctx, workerID, job, agentName, review.NoVerdictMessage(noVerdict),
-		)
-		return
-	}
-	// Typed cursor-cloud launch and cap failures never reach RetryJob, even
-	// when the cause text would classify as a transient 429.
-	if errors.Is(executionErr, agent.ErrCursorCloudNonRetryable) {
-		wp.failoverOrFailNonRetryableAgentContext(
-			ctx, workerID, job, agentName, fmt.Sprintf("agent: %v", executionErr),
 		)
 		return
 	}
@@ -1851,6 +1850,15 @@ func (wp *WorkerPool) failOrRetryInnerLocked(
 			wp.logJobFailed(job.ID, workerID, agentName, errorMsg)
 		}
 	}
+}
+
+// failCursorCloudWithoutRetry marks a cursor-cloud launch failed without
+// RetryJob and without failover. The create may already have allocated a VM,
+// so another attempt would POST /agents again.
+func (wp *WorkerPool) failCursorCloudWithoutRetry(workerID string, job *storage.ReviewJob, agentName string, err error) {
+	wp.runAttemptTransition(workerID, job, func() {
+		wp.failWithoutRetryLocked(workerID, job, agentName, fmt.Sprintf("agent: %v", err))
+	})
 }
 
 func (wp *WorkerPool) failoverOrFailNonRetryableAgentContext(
