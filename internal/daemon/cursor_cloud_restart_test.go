@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +27,9 @@ import (
 )
 
 const cursorCloudRestartRepo = "https://example.com/acme/repo.git"
+
+// sqliteDatetimeText is the text datetime('now') and CURRENT_TIMESTAMP render.
+var sqliteDatetimeText = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$`)
 
 // TestCursorCloudRestartStopsPersistedAgent is the crash pin: agent A is
 // created, the daemon dies with the row still running, and restart must
@@ -1071,9 +1075,11 @@ func TestMalformedCreatedAtIsReportedAsOrphan(t *testing.T) {
 	young := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	youngSQL := young.Format("2006-01-02 15:04:05")
 	cases := []struct {
-		name string
-		raw  string
-		null bool
+		name    string
+		raw     string
+		null    bool
+		young   bool
+		current bool
 	}{
 		{name: "null", null: true},
 		{name: "empty", raw: ""},
@@ -1110,6 +1116,39 @@ func TestMalformedCreatedAtIsReportedAsOrphan(t *testing.T) {
 		{name: "hour-24-z", raw: "1999-06-15T24:00:00Z"},
 		{name: "keyword-now", raw: "now"},
 		{name: "keyword-NOW", raw: "NOW"},
+		{name: "keyword-Now", raw: "Now"},
+		{name: "keyword-NoW", raw: "NoW"},
+		{name: "keyword-nOw", raw: "nOw"},
+		// Aged canonical datetime('now') text is an orphan because it is old.
+		{name: "sqlite-datetime", raw: "1999-06-15 17:00:00"},
+		// The same shape, written recently, ages normally and is not an orphan.
+		{name: "sqlite-datetime-young", raw: youngSQL, young: true},
+		{name: "sqlite-seconds", raw: youngSQL, young: true},
+		// Young shapes Go accepts. datetime() either rewrites them or rejects
+		// them, so the text disagrees and the row is an orphan. A young instant
+		// would be a miss if that disagreement check were removed.
+		{name: "frac-dot-z", raw: young.Format("2006-01-02T15:04:05.000Z")},
+		{name: "frac-dot-offset", raw: young.In(time.FixedZone("west", -5*3600)).Format("2006-01-02T15:04:05.000Z07:00")},
+		{name: "frac-comma-z", raw: young.Format("2006-01-02T15:04:05") + ",500Z"},
+		{name: "frac-comma-offset", raw: young.In(time.FixedZone("west", -5*3600)).Format("2006-01-02T15:04:05") + ",500-05:00"},
+		{name: "offset-minus-zero", raw: young.Format("2006-01-02T15:04:05") + "-00:00"},
+		{name: "offset-plus-14", raw: young.In(time.FixedZone("plus14", 14*3600)).Format("2006-01-02T15:04:05Z07:00")},
+		{name: "offset-minus-12", raw: young.In(time.FixedZone("minus12", -12*3600)).Format("2006-01-02T15:04:05Z07:00")},
+		{name: "offset-minus-13", raw: young.In(time.FixedZone("minus13", -13*3600)).Format("2006-01-02T15:04:05Z07:00")},
+		{name: "offset-plus-15", raw: young.In(time.FixedZone("plus15", 15*3600)).Format("2006-01-02T15:04:05Z07:00")},
+		{name: "sub-ns-z", raw: young.Format("2006-01-02T15:04:05") + ".1234567890123Z"},
+		{name: "sub-ns-offset", raw: young.In(time.FixedZone("west", -5*3600)).Format("2006-01-02T15:04:05") + ".1234567890123-05:00"},
+		{name: "sub-ns-comma-z", raw: young.Format("2006-01-02T15:04:05") + ",1234567890123Z"},
+		// preciseTimestampAt text disagrees with datetime(), so it is an orphan
+		// even when the instant is inside the age window.
+		{name: "precise-timestamp", raw: "1999-06-15T12:00:00.000000000Z"},
+		{name: "precise-timestamp-young", raw: young.Format("2006-01-02T15:04:05.000000000Z07:00")},
+		{name: "current-timestamp", current: true, young: true},
+		// Postgres TIMESTAMPTZ text. sqlite datetime() rejects it, so a young
+		// value is still an orphan: the clocks do not agree.
+		{name: "postgres-timestamptz", raw: "1999-06-15 17:00:00+00"},
+		{name: "postgres-timestamptz-fraction", raw: "1999-06-15 17:00:00.344331+00"},
+		{name: "postgres-timestamptz-young", raw: young.UTC().Format("2006-01-02 15:04:05") + ".344331+00"},
 		{name: "fractional-seconds", raw: youngSQL + ".500"},
 		{name: "zulu", raw: young.Format(time.RFC3339)},
 		{name: "utc-offset", raw: youngSQL[:10] + "T" + youngSQL[11:] + "+00:00"},
@@ -1130,18 +1169,30 @@ func TestMalformedCreatedAtIsReportedAsOrphan(t *testing.T) {
 				require.NoError(t, makeLaunchCreatedAtNullable(t, dbTC.DB))
 				_, err := dbTC.DB.Exec(`UPDATE review_job_cloud_launches SET created_at = NULL WHERE launch_token = ?`, token)
 				require.NoError(t, err)
+			} else if tc.current {
+				_, err := dbTC.DB.Exec(`UPDATE review_job_cloud_launches SET created_at = CURRENT_TIMESTAMP WHERE launch_token = ?`, token)
+				require.NoError(t, err)
+				var stored string
+				require.NoError(t, dbTC.DB.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = ?`, token).Scan(&stored))
+				assert.Regexp(t, sqliteDatetimeText, stored)
 			} else {
 				_, err := dbTC.DB.Exec(`UPDATE review_job_cloud_launches SET created_at = ? WHERE launch_token = ?`, tc.raw, token)
 				require.NoError(t, err)
 			}
 			logs := cursorCloudCaptureLog(t)
 			err := recoverCloudLaunches(context.Background(), dbTC.DB, fake)
-			require.NoError(t, err)
-			assert.Contains(t, logs.String(), "was not listed within")
-			assert.NotContains(t, logs.String(), "not listed yet")
 			var cleaned int
 			require.NoError(t, dbTC.DB.QueryRow(`SELECT cleaned FROM review_job_cloud_launches WHERE launch_token = ?`, token).Scan(&cleaned))
 			assert.Equal(t, 0, cleaned)
+			if tc.young {
+				require.Error(t, err)
+				assert.Contains(t, logs.String(), "not listed yet")
+				assert.NotContains(t, logs.String(), "was not listed within")
+				return
+			}
+			require.NoError(t, err)
+			assert.Contains(t, logs.String(), "was not listed within")
+			assert.NotContains(t, logs.String(), "not listed yet")
 		})
 	}
 }

@@ -26,7 +26,7 @@ func TestBeginCloudLaunchCreatedAtIsInsertTime(t *testing.T) {
 	require.NoError(t, db.BeginCloudLaunch(job.ID, "w", "tok", "https://example.com/acme/repo.git"))
 	var created string
 	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE job_id = ?`, job.ID).Scan(&created))
-	assert.NotEmpty(t, created)
+	assert.Regexp(t, sqliteDatetimeText, created)
 	_, err = db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now') WHERE created_at = ''`)
 	require.NoError(t, err)
 	var again string

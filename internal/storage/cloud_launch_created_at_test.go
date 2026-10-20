@@ -2,6 +2,7 @@ package storage
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +19,10 @@ func TestCloudLaunchInsertStoresCreatedAt(t *testing.T) {
 
 	var created string
 	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = 'created-tok'`).Scan(&created))
-	assert.NotEmpty(t, created)
+	assert.Regexp(t, sqliteDatetimeText, created)
+	parsed, ok := ParseCloudLaunchCreatedAt(created)
+	require.True(t, ok)
+	assert.Less(t, time.Since(parsed).Abs(), 2*time.Minute)
 }
 
 func TestCloudLaunchRebuildCreatedAtDefault(t *testing.T) {
@@ -43,9 +47,16 @@ func TestCloudLaunchRebuildCreatedAtDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.ensureCloudLaunchTable())
 
+	var kept string
+	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = 'before-rebuild'`).Scan(&kept))
+	assert.Equal(t, "2000-01-01 00:00:00", kept)
+
 	_, err = db.Exec(`INSERT INTO review_job_cloud_launches (job_id, launch_token) VALUES (?, 'after-rebuild')`, job.ID)
 	require.NoError(t, err)
 	var created string
 	require.NoError(t, db.QueryRow(`SELECT created_at FROM review_job_cloud_launches WHERE launch_token = 'after-rebuild'`).Scan(&created))
-	assert.NotEmpty(t, created)
+	assert.Regexp(t, sqliteDatetimeText, created)
+	parsed, ok := ParseCloudLaunchCreatedAt(created)
+	require.True(t, ok)
+	assert.Less(t, time.Since(parsed).Abs(), 2*time.Minute)
 }
