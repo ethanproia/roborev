@@ -23,6 +23,9 @@ type CloudLaunch struct {
 	// the create target.
 	RepoIdentity string
 	CreatedAt    string
+	// OrphanNote is the failed-cleanup warning. It stays readable after the
+	// job or repo row is gone; the sweep list is what still returns it.
+	OrphanNote string
 }
 
 func (db *DB) execLaunch(query string, args ...any) error {
@@ -96,7 +99,7 @@ func (db *DB) MarkCloudLaunchCleanedByToken(token string) error {
 
 func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	rows, err := db.Query(`SELECT l.id, l.job_id, l.launch_token, COALESCE(l.agent_id, ''), COALESCE(r.root_path, ''),
-		COALESCE(l.repo_identity, ''), COALESCE(l.created_at, '')
+		COALESCE(l.repo_identity, ''), COALESCE(l.created_at, ''), COALESCE(l.orphan_note, '')
 		FROM review_job_cloud_launches l
 		LEFT JOIN review_jobs j ON j.id = l.job_id
 		LEFT JOIN repos r ON r.id = j.repo_id
@@ -108,7 +111,7 @@ func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	var out []CloudLaunch
 	for rows.Next() {
 		var row CloudLaunch
-		if err := rows.Scan(&row.ID, &row.JobID, &row.Token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt); err != nil {
+		if err := rows.Scan(&row.ID, &row.JobID, &row.Token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt, &row.OrphanNote); err != nil {
 			return nil, err
 		}
 		out = append(out, row)
@@ -242,7 +245,7 @@ func (db *DB) keepCloudLaunchAfterJobDelete() error {
 			agent_id TEXT NOT NULL DEFAULT '',
 			cleaned INTEGER NOT NULL DEFAULT 0,
 			repo_identity TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			orphan_note TEXT NOT NULL DEFAULT '')`,
 		`INSERT INTO review_job_cloud_launches_keep
 			(id, job_id, launch_token, agent_id, cleaned, repo_identity, created_at, orphan_note)

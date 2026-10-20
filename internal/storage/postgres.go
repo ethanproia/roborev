@@ -1753,20 +1753,36 @@ func (p *PgPool) ensureLocalCloudLaunchTable(ctx context.Context) {
 		log.Printf("cursor-cloud: orphan note backfill: %v", err)
 	}
 	// Older builds created this table with ON DELETE CASCADE. Dropping the
-	// job must not drop the launch row. Rows are not rewritten.
-	if _, err := p.pool.Exec(ctx, `DO $$
-DECLARE r record;
-BEGIN
-  FOR r IN
-    SELECT n.nspname, c.relname, con.conname
-    FROM pg_constraint con
-    JOIN pg_class c ON c.oid = con.conrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE c.relname = 'review_job_cloud_launches' AND con.contype = 'f'
-  LOOP
-    EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', r.nspname, r.relname, r.conname);
-  END LOOP;
-END $$`); err != nil {
+	// job must not drop the launch row. Rows are not rewritten. Only the
+	// owned schema's job_id -> review_jobs(id) constraint is dropped.
+	if _, err := p.pool.Exec(ctx, dropCloudLaunchJobFKSQL); err != nil {
 		log.Printf("cursor-cloud: drop launch foreign key: %v", err)
 	}
 }
+
+// dropCloudLaunchJobFKSQL drops one constraint: roborev.review_job_cloud_launches.job_id
+// referencing roborev.review_jobs(id). Other schemas and other foreign keys stay.
+const dropCloudLaunchJobFKSQL = `DO $$
+DECLARE r record;
+BEGIN
+  FOR r IN
+    SELECT con.conname
+    FROM pg_constraint con
+    JOIN pg_class c ON c.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_class f ON f.oid = con.confrelid
+    JOIN pg_namespace fn ON fn.oid = f.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = con.conkey[1]
+    JOIN pg_attribute fa ON fa.attrelid = f.oid AND fa.attnum = con.confkey[1]
+    WHERE n.nspname = '` + pgSchemaName + `'
+      AND c.relname = 'review_job_cloud_launches'
+      AND con.contype = 'f'
+      AND cardinality(con.conkey) = 1
+      AND a.attname = 'job_id'
+      AND fn.nspname = '` + pgSchemaName + `'
+      AND f.relname = 'review_jobs'
+      AND fa.attname = 'id'
+  LOOP
+    EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', '` + pgSchemaName + `', 'review_job_cloud_launches', r.conname);
+  END LOOP;
+END $$`
