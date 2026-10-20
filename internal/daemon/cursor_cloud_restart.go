@@ -133,9 +133,21 @@ func holdEmptyTokenSweep(db *storage.DB, row storage.CloudLaunch, seen, noted bo
 	now := agent.CursorCloudNow()
 	since, _ := parseCloudLaunchCreated(row.CreatedAt)
 	if noted && agent.SweepAllowsClean(false, row.AgentID != "", seen, since, now, cleanDelay) {
-		return db.MarkCloudLaunchCleanedByToken(row.Token)
+		return db.MarkCloudLaunchCleaned(row.ID)
 	}
-	return reportCloudLaunchOrphan(db, row, cleanDelay)
+	// There is no marker, so this pass does not list. The age-out sentence
+	// for a listed miss does not describe that. The row note is the durable
+	// copy; the job error is replaced by later status writes.
+	msg := emptyTokenOrphanReason(row, cleanDelay)
+	log.Print(msg)
+	if err := db.NoteCloudLaunchRowIfEmpty(row.ID, msg); err != nil {
+		return err
+	}
+	return db.NoteCloudLaunchRisk(row.JobID, msg)
+}
+
+func emptyTokenOrphanReason(row storage.CloudLaunch, delay time.Duration) string {
+	return fmt.Sprintf("cursor-cloud orphan risk: job %d launch %d has no launch token to list within cloud_launch_clean_delay_hours (%s)", row.JobID, row.ID, delay)
 }
 
 func holdListedSweep(db *storage.DB, row storage.CloudLaunch, found, seen, noted bool, cleanDelay time.Duration, unusable bool) error {

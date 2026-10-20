@@ -192,6 +192,19 @@ func (db *DB) CountUncleanedCloudLaunches(jobID int64) (int, error) {
 	return n, err
 }
 
+// NoteCloudLaunchRowIfEmpty fills an empty orphan_note on one launch row.
+// A row that already has a note is left as it is. The job error is a
+// separate write.
+func (db *DB) NoteCloudLaunchRowIfEmpty(id int64, msg string) error {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return fmt.Errorf("cursor-cloud: launch note was not recorded")
+	}
+	_, err := db.Exec(`UPDATE review_job_cloud_launches SET orphan_note = ?
+		WHERE id = ? AND cleaned = 0 AND orphan_note = ''`, msg, id)
+	return err
+}
+
 // NoteLaunchOrphanRisk fills an empty orphan_note. It does not change a note
 // that is already set. A write that updates zero rows returns an error,
 // including when the token is missing or the note was already recorded.
