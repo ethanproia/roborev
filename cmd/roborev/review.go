@@ -529,6 +529,12 @@ func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, di
 	if err != nil {
 		return err
 	}
+	// --local runs the registry agent. cursor-cloud launches only after the
+	// daemon binds a launch row, which this path cannot do. Refuse before
+	// agent selection, prompt build, and any create POST.
+	if chosenHost == agent.CursorCloudHost {
+		return errors.New("--local cannot use a cursor-cloud host")
+	}
 
 	// Get the agent (try backup before hardcoded chain). An explicit host
 	// does not fall through to that chain.
