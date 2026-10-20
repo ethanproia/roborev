@@ -363,3 +363,28 @@ func TestCursorCloudRestartEmptyTokenCleansOnlyConfirmedDelete(t *testing.T) {
 		assert.Equal(t, 0, cursorCloudCleanedFlag(t, tc, job.ID))
 	})
 }
+
+// TestCursorCloudRestartEmptyTokenNoteWriteFailureReturnsError pins the
+// empty-token restart path. recoverOneCloudLaunch calls reportCloudLaunchOrphan,
+// which writes the cleanup note through NoteCloudLaunchRisk. A failed note
+// write must be returned. Returning nil from that write fails this test.
+func TestCursorCloudRestartEmptyTokenNoteWriteFailureReturnsError(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	cursorCloudInsertBareLaunch(t, tc, job.ID, "", "")
+	_, err := tc.DB.Exec(`CREATE TRIGGER roborev_fail_empty_token_note
+		BEFORE UPDATE OF error ON review_jobs
+		WHEN NEW.error LIKE '%orphan risk%'
+		BEGIN
+			SELECT RAISE(ABORT, 'note write failed');
+		END`)
+	require.NoError(t, err)
+
+	err = recoverCloudLaunches(context.Background(), tc.DB, fake)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "note write failed")
+	assert.Equal(t, 0, cursorCloudCleanedFlag(t, tc, job.ID))
+	assert.Empty(t, cursorCloudCallIDs(fake, cursorcloudtest.MethodList))
+	assert.Empty(t, cursorCloudCallIDs(fake, cursorcloudtest.MethodDelete))
+}
