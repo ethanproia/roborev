@@ -51,6 +51,7 @@ func reviewCmd() *cobra.Command {
 		repoPath    string
 		sha         string
 		agent       string
+		host        string
 		model       string
 		reasoning   string
 		reviewType  string
@@ -127,6 +128,13 @@ Examples:
 			}
 
 			if reviewType == config.ReviewTypeGoal {
+				if local {
+					// Every host source goes through ReviewHost: --host, repo
+					// config, global config, and ROBOREV_DEFAULT_HOST.
+					if err := refuseLocalCursorCloud(root, host, agent, reviewType, reasoning, false); err != nil {
+						return err
+					}
+				}
 				if len(args) != 0 {
 					return usageErr(cmd, fmt.Errorf("goal review takes no commit arguments"))
 				}
@@ -192,6 +200,14 @@ Examples:
 					))
 				}
 				reviewType = canonical[0]
+			}
+
+			// --local must refuse cursor-cloud before hook maintenance.
+			// autoInstallHooks mutates the repo; a refused run must not.
+			if local {
+				if err := refuseLocalCursorCloud(root, host, agent, reviewType, reasoning, true); err != nil {
+					return err
+				}
 			}
 
 			// Auto-install/upgrade hooks when running from CLI
@@ -447,6 +463,7 @@ Examples:
 	cmd.Flags().StringVar(&repoPath, "repo", "", "path to git repository (default: current directory)")
 	cmd.Flags().StringVar(&sha, "sha", "HEAD", "commit SHA to review (used when no positional args)")
 	cmd.Flags().StringVar(&agent, "agent", "", "agent to use (codex, claude-code, gemini, copilot, opencode, cursor, kiro, kilo, droid, pi, grok)")
+	cmd.Flags().StringVar(&host, "host", "", "review host: local (default), host, or cursor-cloud. CURSOR_API_KEY alone does not select cursor-cloud")
 	cmd.Flags().StringVar(&model, "model", "", "model for agent (format varies: opencode uses provider/model, others use model name)")
 	cmd.Flags().StringVar(&reasoning, "reasoning", "", "reasoning level: legacy presets fast, standard, thorough (default), maximum; exact tiers low, medium, high, xhigh, max")
 	cmd.Flags().BoolVar(&fast, "fast", false, "shorthand for --reasoning fast")
@@ -469,6 +486,54 @@ Examples:
 	registerReviewTypeCompletion(cmd)
 
 	return cmd
+}
+
+// refuseLocalCursorCloud rejects a --local run that would launch cursor-cloud.
+// agentsToo also rejects --agent, a workflow agent, and a backup that resolve
+// to cursor-cloud while the host itself stays local. Goal reviews pass
+// agentsToo false and only consult ReviewHost.
+func refuseLocalCursorCloud(repoPath, hostFlag, agentName, reviewType, reasoning string, agentsToo bool) error {
+	cfg, err := config.LoadGlobal()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cfg = cfg.ForRepo(repoPath)
+	repoCfg, err := config.LoadRepoConfig(repoPath)
+	if err != nil {
+		return fmt.Errorf("load repository config: %w", err)
+	}
+	repoHost := ""
+	if repoCfg != nil {
+		repoHost = repoCfg.Host
+	}
+	chosen, err := agent.ReviewHost(hostFlag, repoHost, cfg.Host)
+	if err != nil {
+		return err
+	}
+	if chosen == agent.CursorCloudHost {
+		return errors.New("--local cannot use a cursor-cloud host")
+	}
+	if !agentsToo {
+		return nil
+	}
+	workflow := config.WorkflowForReviewType(reviewType)
+	if err := config.ValidateRepoConfig(repoPath); err != nil {
+		return fmt.Errorf("resolve workflow config: %w", err)
+	}
+	resolution, err := agent.ResolveWorkflowConfig(agentName, repoPath, cfg, workflow, reasoning)
+	if err != nil {
+		return fmt.Errorf("resolve workflow config: %w", err)
+	}
+	a, err := agent.GetPreferredOrBackupWithConfig(
+		repoPath, resolution.PreferredAgent, cfg, resolution.BackupAgent,
+	)
+	if err != nil {
+		return err
+	}
+	if a != nil && a.Name() == agent.CursorCloudHost {
+		return errors.New("--local cannot use a cursor-cloud host")
+	}
+	return nil
 }
 
 // runLocalReview runs a review directly without the daemon
@@ -521,6 +586,12 @@ func runLocalReview(cmd *cobra.Command, repoPath, gitRef, diffContent string, di
 	)
 	if err != nil {
 		return fmt.Errorf("get agent: %w", err)
+	}
+	// --agent cursor-cloud, a workflow agent, or a cursor-cloud backup can
+	// select the cloud agent while the host stays local. That still reaches
+	// CreateAgent. Refuse it here as well as before hook install.
+	if a.Name() == agent.CursorCloudHost {
+		return errors.New("--local cannot use a cursor-cloud host")
 	}
 
 	// Configure agent with model and reasoning. applyModelForAgent

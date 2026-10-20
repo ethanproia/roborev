@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/roborev/internal/agent"
+	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/testenv"
 	"go.kenn.io/roborev/internal/testutil"
@@ -168,6 +169,113 @@ func TestLocalReviewRefusesCursorCloudHost(t *testing.T) {
 			require.ErrorContains(t, err, "--local cannot use a cursor-cloud host")
 			assert.Equal(t, int32(0), httpCalls.Load())
 			assert.Equal(t, int32(0), launchRows.Load())
+		})
+	}
+}
+
+// cloudCreateFails is a cursor-cloud endpoint that fails the test if create
+// is called. The registered agent points at it.
+func cloudCreateFails(t *testing.T) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("cursor-cloud create was called: %s %s", r.Method, r.URL.Path)
+		http.Error(w, "create called", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	prev, err := agent.Get(agent.CursorCloudHost)
+	require.NoError(t, err)
+	agent.Register(&agent.CursorCloudAgent{
+		Client:  cursorcloud.NewHTTPClient("cursor-test-secret-not-real", cursorcloud.WithBaseURL(srv.URL)),
+		RepoURL: "https://github.com/example/repo.git",
+	})
+	t.Cleanup(func() { agent.Register(prev) })
+}
+
+func TestLocalReviewRefusesCursorCloudBeforeHooks(t *testing.T) {
+	cloudCreateFails(t)
+	t.Setenv(cursorcloud.EnvAPIKey, "cursor-test-secret-not-real")
+	t.Setenv(agent.EnvDefaultHost, "")
+	t.Setenv("ROBOREV_TELEMETRY_ENABLED", "0")
+	h := newReviewHarness(t)
+	err := h.runCmd("--local", "--repo", h.Dir, "--host", agent.CursorCloudHost)
+	require.ErrorContains(t, err, "--local cannot use a cursor-cloud host")
+	_, statErr := os.Stat(filepath.Join(h.Dir, ".git", "hooks", "post-commit"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestLocalReviewRefusesCursorCloudAgentRoutes(t *testing.T) {
+	cloudCreateFails(t)
+	t.Setenv(cursorcloud.EnvAPIKey, "cursor-test-secret-not-real")
+	t.Setenv(agent.EnvDefaultHost, "")
+	t.Setenv("ROBOREV_TELEMETRY_ENABLED", "0")
+	dataDir := t.TempDir()
+	t.Setenv("ROBOREV_DATA_DIR", dataDir)
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		repo   string
+		global string
+	}{
+		{name: "--agent cursor-cloud", args: []string{"--agent", agent.CursorCloudHost}},
+		{name: "workflow agent", repo: "review_agent = \"cursor-cloud\"\n"},
+		{
+			name:   "unavailable preferred with cursor-cloud backup",
+			repo:   "agent = \"codex\"\nbackup_agent = \"cursor-cloud\"\n",
+			global: "codex_cmd = \"/nonexistent/codex-for-local-refusal\"\n",
+		},
+		{name: "--host cursor-cloud", args: []string{"--host", agent.CursorCloudHost}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.global != "" {
+				require.NoError(t, os.WriteFile(config.GlobalConfigPath(), []byte(tc.global), 0o600))
+			} else {
+				_ = os.Remove(config.GlobalConfigPath())
+			}
+			h := newReviewHarness(t)
+			if tc.repo != "" {
+				h.writeConfig(tc.repo)
+			}
+			err := h.runCmd(append([]string{"--local", "--repo", h.Dir, "--quiet"}, tc.args...)...)
+			require.ErrorContains(t, err, "--local cannot use a cursor-cloud host")
+		})
+	}
+}
+
+func TestGoalLocalReviewRefusesCursorCloudHostSources(t *testing.T) {
+	cloudCreateFails(t)
+	t.Setenv(cursorcloud.EnvAPIKey, "cursor-test-secret-not-real")
+	t.Setenv(agent.EnvDefaultHost, "")
+	t.Setenv("ROBOREV_TELEMETRY_ENABLED", "0")
+	dataDir := t.TempDir()
+	t.Setenv("ROBOREV_DATA_DIR", dataDir)
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		repo   string
+		global string
+		env    bool
+	}{
+		{name: "--host", args: []string{"--host", agent.CursorCloudHost}},
+		{name: "repo config", repo: "host = \"cursor-cloud\"\n"},
+		{name: "global config", global: "host = \"cursor-cloud\"\n"},
+		{name: "ROBOREV_DEFAULT_HOST", env: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(agent.EnvDefaultHost, "")
+			if tc.global != "" {
+				require.NoError(t, os.WriteFile(config.GlobalConfigPath(), []byte(tc.global), 0o600))
+			} else {
+				_ = os.Remove(config.GlobalConfigPath())
+			}
+			if tc.env {
+				t.Setenv(agent.EnvDefaultHost, agent.CursorCloudHost)
+			}
+			h := newReviewHarness(t)
+			if tc.repo != "" {
+				h.writeConfig(tc.repo)
+			}
+			err := h.runCmd(append([]string{"--type", "goal", "--local", "--repo", h.Dir, "--quiet"}, tc.args...)...)
+			require.ErrorContains(t, err, "--local cannot use a cursor-cloud host")
 		})
 	}
 }
