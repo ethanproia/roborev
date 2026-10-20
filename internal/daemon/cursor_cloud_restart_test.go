@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"uuid"
 
@@ -173,6 +174,86 @@ func TestCursorCloudRestartRetires404(t *testing.T) {
 	assert.Equal(t, 0, n)
 	_, err = fake.GetAgent(t.Context(), created.ID)
 	require.NoError(t, err, "404 means the server already dropped the agent; cleanup must not invent a second delete")
+}
+
+// TestCursorCloudRestartReaps429Create is a create that stores an agent and
+// then returns 429. The follow-up list is also rate-limited, so the
+// in-process reconcile stops without deleting that agent. The pre-POST
+// launch row stays uncleaned until restart finds the marker and deletes
+// the agent. A second create must not happen.
+func TestCursorCloudRestartReaps429Create(t *testing.T) {
+	t.Setenv(cursorcloud.EnvAPIKey, "cursor-test-secret")
+	tc, fake := cursorCloudRestartFixture(t)
+	provider := &create429Cloud{Fake: fake}
+	provider.setListErr(&cursorcloud.APIError{
+		Op: "list agents", StatusCode: http.StatusTooManyRequests, Message: "too many requests",
+	})
+	prev, err := agent.Get(agent.CursorCloudHost)
+	require.NoError(t, err)
+	cloud := &agent.CursorCloudAgent{Client: provider, RepoURL: cursorCloudRestartRepo}
+	cloud.SetLaunchLimitsForTest(4, 20)
+	agent.Register(cloud)
+	t.Cleanup(func() { agent.Register(prev) })
+
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	tc.Pool.processJob(testWorkerID, job)
+
+	require.NotEmpty(t, provider.createdID)
+	creates := cursorCloudCallCount(fake, cursorcloudtest.MethodCreate)
+	assert.Equal(t, 1, creates)
+	_, err = fake.GetAgent(t.Context(), provider.createdID)
+	require.NoError(t, err, "a 429 create that stored an agent must still be reachable before restart")
+	n, err := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "token-only row stays uncleaned until its marked agent is found and deleted")
+
+	provider.setListErr(nil)
+	require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, provider))
+	assert.Equal(t, creates, cursorCloudCallCount(fake, cursorcloudtest.MethodCreate))
+	_, err = fake.GetAgent(t.Context(), provider.createdID)
+	require.Error(t, err)
+	n, err = tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+// create429Cloud stores the launch, then answers 429. listErr withholds the
+// agent from the in-process reconcile so only the startup sweep can reap it.
+type create429Cloud struct {
+	*cursorcloudtest.Fake
+	mu        sync.Mutex
+	listErr   error
+	createdID string
+}
+
+func (c *create429Cloud) setListErr(err error) {
+	c.mu.Lock()
+	c.listErr = err
+	c.mu.Unlock()
+}
+
+func (c *create429Cloud) CreateAgent(ctx context.Context, req cursorcloud.CreateAgentRequest) (cursorcloud.Agent, error) {
+	created, err := c.Fake.CreateAgent(ctx, req)
+	if err != nil {
+		return cursorcloud.Agent{}, err
+	}
+	c.mu.Lock()
+	c.createdID = created.ID
+	c.mu.Unlock()
+	return cursorcloud.Agent{}, &cursorcloud.APIError{
+		Op: "create agent", StatusCode: http.StatusTooManyRequests, Message: "too many requests",
+	}
+}
+
+func (c *create429Cloud) ListAgents(ctx context.Context) ([]cursorcloud.Agent, error) {
+	c.mu.Lock()
+	listErr := c.listErr
+	c.mu.Unlock()
+	if listErr != nil {
+		return nil, listErr
+	}
+	return c.Fake.ListAgents(ctx)
 }
 
 func cursorCloudRestartFixture(t *testing.T) (*workerTestContext, *cursorcloudtest.Fake) {
