@@ -1874,6 +1874,7 @@ type listDeadlineCloud struct {
 func (c *listDeadlineCloud) CreateAgent(context.Context, cursorcloud.CreateAgentRequest) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, errors.New("unused")
 }
+
 func (c *listDeadlineCloud) GetAgent(context.Context, string) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, nil
 }
@@ -1901,6 +1902,7 @@ type lateWindowCloud struct {
 func (c *lateWindowCloud) CreateAgent(context.Context, cursorcloud.CreateAgentRequest) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, errors.New("unused")
 }
+
 func (c *lateWindowCloud) GetAgent(context.Context, string) (cursorcloud.Agent, error) {
 	return cursorcloud.Agent{}, nil
 }
@@ -1908,11 +1910,14 @@ func (c *lateWindowCloud) FinalMessage(context.Context, string) (string, error) 
 func (c *lateWindowCloud) UserPrompt(context.Context, string) (string, error) {
 	return c.prompt, nil
 }
+
 func (c *lateWindowCloud) StopAgent(context.Context, string) error { return nil }
+
 func (c *lateWindowCloud) DeleteAgent(_ context.Context, id string) error {
 	c.deleted = append(c.deleted, id)
 	return nil
 }
+
 func (c *lateWindowCloud) ListAgents(context.Context) ([]cursorcloud.Agent, error) {
 	if c.started.IsZero() {
 		c.started = time.Now()
