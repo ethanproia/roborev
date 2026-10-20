@@ -154,12 +154,15 @@ func TestCIMemberCloudCleanupCrashDoesNotRelaunch(t *testing.T) {
 
 	creates := cursorCloudCallCount(fake, cursorcloudtest.MethodCreate)
 	require.Equal(t, 1, creates)
-	require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+	// The review already deleted the VM. Restart sees that 404 as gone.
+	// The lag gate leaves the row uncleaned and does not relaunch.
+	err = recoverStaleJobs(context.Background(), tc.DB, fake)
+	require.ErrorContains(t, err, "not listed yet")
 	drainRecoveredJob(t, tc, job.ID, false)
 
 	assert.Equal(t, creates, cursorCloudCallCount(fake, cursorcloudtest.MethodCreate))
 	updated := tc.assertJobStatus(t, job.ID, storage.JobStatusFailed)
-	assert.Equal(t, storage.CloudLaunchInterruptedError, updated.Error)
+	assert.Contains(t, updated.Error, storage.CloudLaunchInterruptedError)
 	assert.Equal(t, primary, updated.Agent)
 	assert.Equal(t, storage.JobSourceCI, updated.Source)
 	assert.Equal(t, 0, updated.RetryCount)
@@ -211,7 +214,8 @@ func TestCISynthesisCloudCleanupCrashDoesNotRelaunch(t *testing.T) {
 
 	assert.Equal(t, creates, cursorCloudCallCount(fake, cursorcloudtest.MethodCreate))
 	updated := tc.assertJobStatus(t, synth.ID, storage.JobStatusFailed)
-	assert.Equal(t, storage.CloudLaunchInterruptedError, updated.Error)
+	assert.Contains(t, updated.Error, storage.CloudLaunchInterruptedError)
+	assert.Contains(t, updated.Error, "orphan risk")
 	assert.Equal(t, primary, updated.Agent)
 	assert.Equal(t, storage.JobSourceCI, updated.Source)
 	assert.Equal(t, 0, updated.RetryCount)
@@ -254,12 +258,13 @@ func TestClassifyToDesignCloudCleanupCrashDoesNotRelaunch(t *testing.T) {
 
 	creates := cursorCloudCallCount(fake, cursorcloudtest.MethodCreate)
 	require.Equal(t, 1, creates)
-	require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+	err = recoverStaleJobs(context.Background(), tc.DB, fake)
+	require.ErrorContains(t, err, "not listed yet")
 	drainRecoveredJob(t, tc, job.ID, false)
 
 	assert.Equal(t, creates, cursorCloudCallCount(fake, cursorcloudtest.MethodCreate))
 	updated := tc.assertJobStatus(t, job.ID, storage.JobStatusFailed)
-	assert.Equal(t, storage.CloudLaunchInterruptedError, updated.Error)
+	assert.Contains(t, updated.Error, storage.CloudLaunchInterruptedError)
 	assert.Equal(t, primary, updated.Agent)
 	assert.Equal(t, "design", updated.ReviewType)
 	assert.Equal(t, "auto_design", updated.Source)

@@ -96,6 +96,8 @@ func TestCursorCloudSweepDuplicateCleansEveryTokenRow(t *testing.T) {
 		`SELECT id FROM review_job_cloud_launches WHERE job_id = ? AND launch_token = ?`,
 		job.ID, token,
 	).Scan(&sweptID))
+	_, err := tc.DB.Exec(`DROP INDEX IF EXISTS idx_review_job_cloud_launches_token`)
+	require.NoError(t, err)
 	res, err := tc.DB.Exec(`INSERT INTO review_job_cloud_launches
 		(job_id, launch_token, agent_id, repo_identity, created_at, orphan_note)
 		VALUES (?, ?, '', ?, datetime('now'), ?)`,
@@ -106,13 +108,19 @@ func TestCursorCloudSweepDuplicateCleansEveryTokenRow(t *testing.T) {
 
 	err = recoverStaleJobs(context.Background(), tc.DB, fake)
 	assert := assert.New(t)
-	assert.Equal(1, cursorCloudLaunchCleaned(t, tc.DB, sweptID))
-	assert.Equal(1, cursorCloudLaunchCleaned(t, tc.DB, siblingID))
+	// One pass deletes the VM and does not clean. The lag gate waits for a
+	// later sweep. Both rows stay uncleaned until that sweep.
+	assert.Equal(0, cursorCloudLaunchCleaned(t, tc.DB, sweptID))
+	assert.Equal(0, cursorCloudLaunchCleaned(t, tc.DB, siblingID))
 	_, getErr := fake.GetAgent(t.Context(), saved.ID)
 	require.Error(t, getErr)
 	_, getErr = fake.GetAgent(t.Context(), dup.ID)
 	require.Error(t, getErr)
-	// The sibling is already cleaned by the token, then the same startup
-	// lists it again and misses the VM. That miss is not a second delete.
 	require.ErrorContains(t, err, "not listed yet")
+
+	cursorCloudAgeLaunch(t, tc.DB, job.ID)
+	err = recoverStaleJobs(context.Background(), tc.DB, fake)
+	require.NoError(t, err)
+	assert.Equal(1, cursorCloudLaunchCleaned(t, tc.DB, sweptID))
+	assert.Equal(1, cursorCloudLaunchCleaned(t, tc.DB, siblingID))
 }

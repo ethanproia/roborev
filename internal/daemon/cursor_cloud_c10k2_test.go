@@ -16,8 +16,8 @@ import (
 )
 
 // TestNoUsableRepoPathDoesNotCleanByKey is the pin for token-only recovery
-// when neither the stored identity nor the checkout remote can be listed.
-// Cleaning that row by its token would drop a launch that was never swept.
+// when neither the stored identity nor the checkout remote can filter a list.
+// The token sweep still deletes the matching agent. The row stays uncleaned.
 func TestNoUsableRepoPathDoesNotCleanByKey(t *testing.T) {
 	tc, fake := cursorCloudRestartFixture(t)
 	sha := testutil.GetHeadSHA(t, tc.TmpDir)
@@ -31,10 +31,10 @@ func TestNoUsableRepoPathDoesNotCleanByKey(t *testing.T) {
 
 	require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, fake))
 	assert.Equal(t, 0, cursorCloudCleanedFlag(t, tc, job.ID))
-	got, getErr := fake.GetAgent(t.Context(), live.ID)
-	require.NoError(t, getErr)
-	assert.Equal(t, live.ID, got.ID)
-	assert.Empty(t, cursorCloudCallIDs(fake, cursorcloudtest.MethodList))
+	_, getErr := fake.GetAgent(t.Context(), live.ID)
+	require.Error(t, getErr)
+	assert.Equal(t, []string{live.ID}, cursorCloudCallIDs(fake, cursorcloudtest.MethodDelete))
+	assert.NotEmpty(t, cursorCloudCallIDs(fake, cursorcloudtest.MethodList))
 	updated, err := tc.DB.GetJobByID(job.ID)
 	require.NoError(t, err)
 	assert.Contains(t, updated.Error, "orphan risk")
