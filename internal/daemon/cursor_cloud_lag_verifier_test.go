@@ -384,6 +384,46 @@ func runBoundaryNote(t *testing.T, now time.Time, created string) string {
 	return text
 }
 
+// TestPersistedOrphanNoteRequiresCursorCloudSentence is the note match.
+// An error that merely contains "orphan risk" is not the stored sentence,
+// so the confirming empty sweep does not clean. The real sentence does.
+func TestPersistedOrphanNoteRequiresCursorCloudSentence(t *testing.T) {
+	t.Run("unrelated text", func(t *testing.T) {
+		n := runNotedBoundary(t, "operator: orphan risk accepted")
+		assert.Equal(t, 1, n)
+	})
+	t.Run("cursor-cloud sentence", func(t *testing.T) {
+		n := runNotedBoundary(t, agent.CursorCloudPendingOrphanNote())
+		assert.Equal(t, 0, n)
+	})
+}
+
+func runNotedBoundary(t *testing.T, jobErr string) int {
+	t.Helper()
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	const token = "launch-token-note-match"
+	cursorCloudBeginToken(t, tc, job.ID, token)
+	require.NoError(t, tc.DB.AttachCloudAgent(job.ID, token, "bc_note_match"))
+	cursorCloudAgeLaunchPastLag(t, tc.DB, job.ID)
+	fake.MethodErrors = map[string]error{
+		cursorcloudtest.MethodDelete: &cursorcloud.APIError{
+			Op: "delete agent", StatusCode: http.StatusNotFound, Message: "not found",
+		},
+	}
+	require.ErrorContains(t, recoverLaunchSweep(tc.DB, fake, nil), "not listed yet")
+	_, err := tc.DB.Exec(`UPDATE review_jobs SET error = ? WHERE id = ?`, jobErr, job.ID)
+	require.NoError(t, err)
+	err = recoverLaunchSweep(tc.DB, fake, nil)
+	n, nerr := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, nerr)
+	if n == 0 {
+		require.NoError(t, err)
+	}
+	return n
+}
+
 // TestSamePassListsEmptyTwiceDoesNotClean is one restart that lists empty
 // twice. The second list is not a later restart, so the row stays uncleaned.
 // The next restart's empty list cleans it.

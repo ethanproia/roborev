@@ -183,8 +183,10 @@ func noteUnconfirmedCloudDelete(db *storage.DB, row storage.CloudLaunch) error {
 }
 
 // persistedCleanNote reports whether a previous pass already stored the
-// orphan note on the job. A missing job has nowhere to store it. A clean
-// still requires the separate sweep tick in that case.
+// orphan note on the job. The marker is the cursor-cloud sentence. The
+// words "orphan risk" inside some other error are not that note. A missing
+// job has nowhere to store it. A clean still requires the separate sweep
+// tick in that case.
 func persistedCleanNote(db *storage.DB, jobID int64) (bool, error) {
 	var text string
 	err := db.QueryRow(`SELECT COALESCE(error, '') FROM review_jobs WHERE id = ?`, jobID).Scan(&text)
@@ -194,7 +196,7 @@ func persistedCleanNote(db *storage.DB, jobID int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.Contains(text, "orphan risk"), nil
+	return strings.Contains(text, "cursor-cloud orphan risk"), nil
 }
 
 func parseCloudLaunchCreated(createdAt string) (time.Time, bool) {
