@@ -123,3 +123,94 @@ func TestExplicitHostFlagCreate500AfterSendDoesNotFailOver(t *testing.T) {
 	require.NoError(t, claimErr)
 	assert.Nil(t, claimed)
 }
+
+// enqueueCursorCloudHostSource enqueues one ordinary review whose cursor-cloud
+// host comes from exactly one source, with a workflow backup of "test".
+func enqueueCursorCloudHostSource(t *testing.T, source string) (*Server, *storage.ReviewJob) {
+	t.Helper()
+	t.Setenv(cursorcloud.EnvAPIKey, "cursor-test-secret")
+	t.Setenv(agent.EnvDefaultHost, "")
+	db, tmpDir := testutil.OpenTestDBWithDir(t)
+	cfg := config.DefaultConfig()
+	cfg.MaxWorkers = 0
+	cfg.ReviewBackupAgent = "test"
+	req := EnqueueRequest{GitRef: "HEAD"}
+	switch source {
+	case "config host":
+		cfg.Host = agent.CursorCloudHost
+	case "--host":
+		req.Host = agent.CursorCloudHost
+	case "ROBOREV_DEFAULT_HOST":
+		t.Setenv(agent.EnvDefaultHost, agent.CursorCloudHost)
+	}
+	server := newServerWithLogs(db, cfg, "", newTestErrorLog(), newTestActivityLog())
+	t.Cleanup(func() { _ = server.Close() })
+
+	repo := testutil.InitTestGitRepo(t, filepath.Join(tmpDir, "repo"))
+	repo.CommitFile("a.txt", "one\n", "one")
+	req.RepoPath = repo.Path()
+	created := enqueueViaHTTP(t, server, req)
+	claimed, err := db.ClaimJob(testWorkerID)
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	require.Equal(t, created.ID, claimed.ID)
+	require.Equal(t, agent.CursorCloudHost, claimed.Agent)
+	require.Empty(t, claimed.BackupAgent)
+	return server, claimed
+}
+
+// TestCursorCloudHostSourcesCreate500DoNotFailOver requires config host,
+// --host, and ROBOREV_DEFAULT_HOST to store the same bit and to refuse a
+// workflow backup after a create 500. The config-host outcome is the bar:
+// the job fails on cursor-cloud and is not retried. A cursor-cloud agent
+// with no host source may still fail over; cursor_cloud_retry_test.go pins that.
+func TestCursorCloudHostSourcesCreate500DoNotFailOver(t *testing.T) {
+	for _, source := range []string{"config host", "--host", "ROBOREV_DEFAULT_HOST"} {
+		t.Run(source, func(t *testing.T) {
+			assert := assert.New(t)
+			server, job := enqueueCursorCloudHostSource(t, source)
+			var explicit int
+			require.NoError(t, server.db.QueryRow(
+				`SELECT explicit_host FROM review_jobs WHERE id = ?`, job.ID,
+			).Scan(&explicit))
+			assert.Equal(1, explicit)
+			assert.True(job.ExplicitHost)
+			assert.Empty(server.workerPool.resolveBackupAgent(job))
+
+			fake := &cursorcloudtest.Fake{MethodErrors: map[string]error{
+				cursorcloudtest.MethodCreate: &cursorcloud.APIError{
+					Op: "create agent", StatusCode: http.StatusInternalServerError, Message: "unavailable",
+				},
+				cursorcloudtest.MethodList: &cursorcloud.APIError{
+					Op: "list agents", StatusCode: http.StatusTooManyRequests, Message: "slow",
+				},
+			}}
+			prev, err := agent.Get(agent.CursorCloudHost)
+			require.NoError(t, err)
+			agent.Register(&agent.CursorCloudAgent{
+				Client:  fake,
+				RepoURL: "https://github.com/acme/api.git",
+			})
+			t.Cleanup(func() { agent.Register(prev) })
+
+			server.workerPool.processJob(testWorkerID, job)
+
+			creates := 0
+			for _, call := range fake.Calls() {
+				if call.Method == cursorcloudtest.MethodCreate {
+					creates++
+				}
+			}
+			assert.Equal(1, creates)
+			updated, err := server.db.GetJobByID(job.ID)
+			require.NoError(t, err)
+			assert.Equal(storage.JobStatusFailed, updated.Status)
+			assert.Equal(agent.CursorCloudHost, updated.Agent)
+			assert.Equal(0, updated.RetryCount)
+			assert.NotContains(updated.Error, "failing over")
+			claimed, claimErr := server.db.ClaimJob(testWorkerID)
+			require.NoError(t, claimErr)
+			assert.Nil(claimed)
+		})
+	}
+}

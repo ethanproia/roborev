@@ -3113,10 +3113,15 @@ func (s *Server) resolveSingleAgent(
 	if host, early := resolveEnqueueHost(in.workflow, in.req.ReviewType, enqueueHostJobType(in.req.JobType, in.req.CustomPrompt, in.gitRef), in.req.Host, in.repoCfg, in.cfg); early != nil {
 		return resolvedSingleAgent{}, early
 	} else if host != agent.ReviewHostLocal {
+		// ReviewHost already applied --host, then repo host, then global
+		// host, then ROBOREV_DEFAULT_HOST. Store cursor-cloud from any of
+		// those so a create failure after send matches a config host. A
+		// cursor-cloud workflow agent, chosen while the host stays local,
+		// does not set the bit and may still fail over.
 		return resolvedSingleAgent{
 			Agent:        host,
 			Model:        in.requestedModel,
-			ExplicitHost: strings.TrimSpace(in.req.Host) != "" && strings.EqualFold(host, agent.CursorCloudHost),
+			ExplicitHost: strings.EqualFold(host, agent.CursorCloudHost),
 		}, nil
 	}
 	resolution, err := agent.ResolveWorkflowConfigFromConfig(

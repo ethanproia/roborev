@@ -103,7 +103,7 @@ type EnqueueOpts struct {
 	BackupAgent  string
 	BackupModel  string
 	BackupAuto   bool // BackupAgent is the enqueue-time pin of an "auto" backup
-	ExplicitHost bool // --host selected the host; local, not synced
+	ExplicitHost bool // cursor-cloud host source; local, not synced
 	// Panel relation (subagent review panels).
 	PanelRunUUID          *uuid.UUID                 // Groups member + synthesis jobs of one run
 	PanelRole             string                     // "", "member", or "synthesis"
