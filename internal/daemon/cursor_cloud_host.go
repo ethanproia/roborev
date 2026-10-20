@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"go.kenn.io/roborev/internal/agent"
 	"go.kenn.io/roborev/internal/config"
@@ -21,6 +22,24 @@ func reviewHostApplies(workflow, reviewType, jobType string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// enqueueHostJobType is the job type the host guard should see. An empty
+// request field is classified the same way classifyTarget reads the git ref:
+// "dirty" and a ".." range. A single commit stays empty so storage still
+// infers "review" after the commit id is known.
+func enqueueHostJobType(explicit, customPrompt, gitRef string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	switch classifyTarget(customPrompt, gitRef) {
+	case kindDirty:
+		return storage.JobTypeDirty
+	case kindRange:
+		return storage.JobTypeRange
+	default:
+		return ""
 	}
 }
 
