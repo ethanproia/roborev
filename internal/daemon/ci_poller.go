@@ -1164,6 +1164,28 @@ func (p *CIPoller) resolveCIMatrixMembers(
 	if len(matrix) == 0 {
 		return nil, config.SynthesisSpec{}, nil
 	}
+	repoHost, globalHost := "", ""
+	if repoCfg != nil {
+		repoHost = repoCfg.Host
+	}
+	if cfg != nil {
+		globalHost = cfg.Host
+	}
+	if host, err := agent.ReviewHost("", repoHost, globalHost); err != nil {
+		return nil, config.SynthesisSpec{}, err
+	} else if host == agent.CursorCloudHost {
+		// The agents x review_types matrix would launch one cloud VM per cell.
+		synth, err := config.ResolveCISynthesis(reasoning, repoCfg, cfg)
+		if err != nil {
+			return nil, config.SynthesisSpec{}, fmt.Errorf("resolve CI synthesis: %w", err)
+		}
+		return []config.ResolvedMember{{
+			Name:      host,
+			Index:     0,
+			Agent:     host,
+			Reasoning: reasoning,
+		}}, synth, nil
+	}
 
 	members := make([]config.ResolvedMember, 0, len(matrix))
 	for i, entry := range matrix {
@@ -1335,6 +1357,18 @@ func (p *CIPoller) resolveMatrixMemberAgent(
 	reasoning string,
 ) (string, string, string, string, error) {
 	workflow := config.WorkflowForReviewType(entry.ReviewType)
+	repoHost, globalHost := "", ""
+	if repoCfg != nil {
+		repoHost = repoCfg.Host
+	}
+	if cfg != nil {
+		globalHost = cfg.Host
+	}
+	if host, err := agent.ReviewHost("", repoHost, globalHost); err != nil {
+		return "", "", "", "", err
+	} else if host == agent.CursorCloudHost {
+		return host, "", "", "", nil
+	}
 	resolution, err := agent.ResolveWorkflowConfigFromConfig(entry.Agent, repoCfg, cfg, workflow, reasoning)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("resolve workflow config: %w", err)
@@ -1669,6 +1703,12 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, storage.EnqueueOpts{}, fmt.Errorf("prebuild prompt for %s#%d canceled: %w", in.ghRepo, in.prNumber, err)
 			}
+			// cursor-cloud rejects the frozen range ref, so its job ref is the
+			// head commit. The range review lives only in this prebuilt prompt.
+			// Queueing without it would review the head commit alone.
+			if agent.CanonicalName(m.Agent) == agent.CursorCloudHost {
+				return nil, storage.EnqueueOpts{}, fmt.Errorf("cursor-cloud CI review needs the prebuilt pull request range prompt: %w", err)
+			}
 			log.Printf("CI poller: failed to prebuild prompt for %s#%d (member=%s, agent=%s): %v; enqueuing without stored prompt",
 				in.ghRepo, in.prNumber, m.Name, m.Agent, err)
 			if in.cfg.CI.Personal.Enabled {
@@ -1678,6 +1718,17 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 		}
 		if in.cfg.CI.Personal.Enabled && strings.TrimSpace(storedPrompt) == "" {
 			return nil, storage.EnqueueOpts{}, fmt.Errorf("personal review prompt is empty")
+		}
+		if agent.CanonicalName(m.Agent) == agent.CursorCloudHost && strings.TrimSpace(storedPrompt) == "" {
+			return nil, storage.EnqueueOpts{}, fmt.Errorf("cursor-cloud CI review prompt is empty")
+		}
+		gitRef := in.gitRef
+		if agent.CanonicalName(m.Agent) == agent.CursorCloudHost {
+			head, refErr := cursorCloudCIRef(in.gitRef)
+			if refErr != nil {
+				return nil, storage.EnqueueOpts{}, refErr
+			}
+			gitRef = head
 		}
 		acpSnapshot, err := snapshotACPExecutionConfig(
 			in.repoCfg, in.cfg, m.Agent, m.BackupAgent,
@@ -1699,7 +1750,7 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 		}
 		memberOpts = append(memberOpts, storage.EnqueueOpts{
 			RepoID:                in.repo.ID,
-			GitRef:                in.gitRef,
+			GitRef:                gitRef,
 			Branch:                in.branch,
 			CIBaseBranch:          in.baseBranch,
 			Agent:                 m.Agent,
@@ -1765,6 +1816,18 @@ func (p *CIPoller) buildPanelOpts(ctx context.Context, in buildPanelOptsInput) (
 		ClaimBlocked:          true,
 	}
 	return memberOpts, synthOpts, nil
+}
+
+// cursorCloudCIRef is the commit a CI cursor-cloud member launches at.
+// enqueuePanelRun freezes every pull request as merge-base..head, and
+// cursor-cloud rejects a range. The head commit is the pull request tip.
+// The prompt is still built from the full range.
+func cursorCloudCIRef(gitRef string) (string, error) {
+	head := strings.TrimSpace(headOf(gitRef))
+	if head == "" || head == "dirty" || strings.Contains(head, "..") {
+		return "", fmt.Errorf("cursor-cloud reviews one commit; CI ref %q has no head commit", gitRef)
+	}
+	return head, nil
 }
 
 func listCommitsInRange(repoPath, base, head string) ([]string, error) {
