@@ -72,16 +72,11 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 		}
 	}
 	if row.Token == "" {
-		// A known id was deleted above (nil or 404) or this list is empty.
-		// Anything else stays uncleaned: there was no confirming delete or list.
+		// StopAndDelete above already returned nil for a saved agent id.
+		// That is a confirmed delete. An empty agent list is not: a row
+		// upgraded with a NULL or blank token stays uncleaned.
 		if row.AgentID == "" {
-			agents, err := client.ListAgents(ctx)
-			if err != nil {
-				return err
-			}
-			if len(agents) != 0 {
-				return fmt.Errorf("cursor-cloud: launch %d has an empty token and was not listed", row.ID)
-			}
+			return fmt.Errorf("cursor-cloud: launch %d has an empty token and was not confirmed deleted", row.ID)
 		}
 		return db.MarkCloudLaunchCleaned(row.ID)
 	}
@@ -91,7 +86,7 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 	}
 	if !agent.CursorCloudRepoUsable(repoURL) {
 		if row.AgentID != "" {
-			return db.MarkCloudLaunchCleaned(row.ID)
+			return db.MarkCloudLaunchCleanedByToken(row.Token)
 		}
 		return fmt.Errorf("cursor-cloud: launch %d has no repository to sweep", row.ID)
 	}
@@ -107,7 +102,7 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 		}
 		return fmt.Errorf("cursor-cloud: launch %d not listed yet", row.ID)
 	}
-	return db.MarkCloudLaunchCleaned(row.ID)
+	return db.MarkCloudLaunchCleanedByToken(row.Token)
 }
 
 func cloudLaunchAgedOut(createdAt string, now time.Time) bool {

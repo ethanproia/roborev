@@ -97,7 +97,7 @@ func TestKnownIDDeleteCleansOnlyAfterNilOr404(t *testing.T) {
 	})
 }
 
-func TestEmptyTokenCleansOnlyOnConfirmedEmptyList(t *testing.T) {
+func TestEmptyTokenStaysUncleanedWithoutConfirmedDelete(t *testing.T) {
 	t.Run("non-empty list", func(t *testing.T) {
 		tc, fake := cursorCloudRestartFixture(t)
 		sha := testutil.GetHeadSHA(t, tc.TmpDir)
@@ -114,10 +114,11 @@ func TestEmptyTokenCleansOnlyOnConfirmedEmptyList(t *testing.T) {
 		sha := testutil.GetHeadSHA(t, tc.TmpDir)
 		job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
 		cursorCloudInsertEmptyToken(t, tc.DB, job.ID, "")
-		require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+		require.Error(t, recoverStaleJobs(context.Background(), tc.DB, fake))
 		n, err := tc.DB.CountUncleanedCloudLaunches(job.ID)
 		require.NoError(t, err)
-		assert.Equal(t, 0, n)
+		assert.Equal(t, 1, n)
+		assert.Contains(t, cursorCloudLaunchNote(t, tc.DB, job.ID), "orphan risk")
 	})
 }
 
