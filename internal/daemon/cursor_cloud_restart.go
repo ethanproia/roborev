@@ -71,7 +71,8 @@ var cursorCloudSamePassResweep func(ctx context.Context, client cursorcloud.Clie
 func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorcloud.Client, daemonID string, row storage.CloudLaunch, globalCfg *config.Config) error {
 	cleanDelay := config.ResolveCloudLaunchCleanDelay(row.RepoPath, globalCfg)
 	// Read before this pass lists or writes a note. A second list below
-	// cannot turn this pass into the confirming sweep.
+	// cannot turn this pass into the confirming sweep. seen is an earlier
+	// empty list. A pass that found a VM clears it before returning.
 	seen, err := db.CloudLaunchSweepSeen(row.ID)
 	if err != nil {
 		return err
@@ -143,7 +144,15 @@ func holdListedSweep(db *storage.DB, row storage.CloudLaunch, found, seen, noted
 	if noted && agent.SweepAllowsClean(found, row.AgentID != "", seen, since, now, cleanDelay) {
 		return db.MarkCloudLaunchCleanedByToken(row.Token)
 	}
-	if err := db.NoteCloudLaunchSweep(row.ID); err != nil {
+	// A found list is not an empty confirmation. Leaving sweep_seen set
+	// would let the next empty list clean while a hidden duplicate is
+	// still live. One empty list after this find stays uncleaned. The
+	// empty list after that one is the existing confirmation.
+	if found {
+		if err := db.ClearCloudLaunchSweepSeen(row.ID); err != nil {
+			return err
+		}
+	} else if err := db.NoteCloudLaunchSweep(row.ID); err != nil {
 		return err
 	}
 	if unusable {

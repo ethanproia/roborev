@@ -73,8 +73,10 @@ func CursorCloudPendingOrphanNote() string { return cursorCloudPendingOrphanNote
 // SweepAllowsClean is the only gate for marking a launch cleaned.
 // found means this sweep deleted a VM, so it is not an empty sweep.
 // byIDDeleted means every VM found so far was removed by id.
-// independent means an earlier pass already listed. A second list inside
-// the pass that is deciding, including a reconcile retry, stays false.
+// independent means an earlier pass already listed and found nothing.
+// A pass that found a VM clears that tick, so the next empty list stays
+// false. A second list inside the pass that is deciding, including a
+// reconcile retry, stays false.
 // minDelay is config cloud_launch_clean_delay_hours. A valid repo value of
 // at least 1 hour wins over global; 0, negative, and unparseable clamp to
 // 1 hour. A same-day restart still has to be able to see a VM an earlier

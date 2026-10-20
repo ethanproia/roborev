@@ -70,18 +70,28 @@ func (db *DB) MarkCloudLaunchCleaned(launchID int64) error {
 	return err
 }
 
-// CloudLaunchSweepSeen reports whether an earlier pass already listed this
-// launch. The pass that lists does not clean. A later restart reads this
-// before it lists again.
+// CloudLaunchSweepSeen reports whether an earlier pass listed this launch
+// and found nothing. That empty pass does not clean. A later restart reads
+// this before it lists again. A pass that found a VM clears it, so the next
+// empty list is not yet this confirmation.
 func (db *DB) CloudLaunchSweepSeen(id int64) (bool, error) {
 	var seen int
 	err := db.QueryRow(`SELECT sweep_seen FROM review_job_cloud_launches WHERE id = ?`, id).Scan(&seen)
 	return seen != 0, err
 }
 
-// NoteCloudLaunchSweep records that this pass listed. It does not clean.
+// NoteCloudLaunchSweep records that this pass listed and found nothing.
+// It does not clean.
 func (db *DB) NoteCloudLaunchSweep(id int64) error {
 	_, err := db.Exec(`UPDATE review_job_cloud_launches SET sweep_seen = 1 WHERE id = ? AND cleaned = 0`, id)
+	return err
+}
+
+// ClearCloudLaunchSweepSeen drops the confirming empty tick. A pass that
+// found a VM calls this. The next empty list cannot clean: a hidden
+// duplicate can still be live. The empty list after that one can.
+func (db *DB) ClearCloudLaunchSweepSeen(id int64) error {
+	_, err := db.Exec(`UPDATE review_job_cloud_launches SET sweep_seen = 0 WHERE id = ? AND cleaned = 0`, id)
 	return err
 }
 
@@ -89,8 +99,9 @@ func (db *DB) NoteCloudLaunchSweep(id int64) error {
 // The token is unique per launch row and the row can outlive its job, so
 // the job id is not part of the key. orphan_note changes only inside
 // MarkCloudLaunchCleaned. Callers mark cleaned only after SweepAllowsClean:
-// a later restart whose own list is empty, after the documented minimum age,
-// and only once every VM found so far was deleted by id.
+// a later restart whose own list is empty, after an earlier empty list,
+// after the documented minimum age, and only once every VM found so far
+// was deleted by id. The empty list that follows a found list does not.
 func (db *DB) MarkCloudLaunchCleanedByToken(token string) error {
 	rows, err := db.Query(`SELECT id FROM review_job_cloud_launches WHERE launch_token = ? AND cleaned = 0 ORDER BY id`, token)
 	if err != nil {

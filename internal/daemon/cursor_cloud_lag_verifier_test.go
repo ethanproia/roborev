@@ -55,8 +55,10 @@ func (h *hideOnFirstList) DeleteAgent(ctx context.Context, id string) error {
 
 // TestCursorCloudDelayedDuplicateStaysUncleanedUntilLaterEmptySweep is the
 // listing-lag repro. The first post-delete list hides the second same-token
-// VM. The restart that deletes the duplicate still does not clean. A later
-// restart's empty list cleans only after the delay that actually won.
+// VM. The restart that deletes the duplicate still does not clean. The next
+// restart's empty list is the first empty after that find, so it does not
+// clean either: a delayed duplicate can still be hidden. The empty list
+// after that one cleans only after the delay that actually won.
 // Repo 0, a negative repo value, and an unparseable repo value clamp to
 // 1 hour, so a launch younger than that stays uncleaned. A valid repo
 // value wins when it disagrees with global.
@@ -120,15 +122,17 @@ func runDelayedDup(t *testing.T, repoTOML string, global *config.Config, age, wa
 	err = recoverLaunchSweep(tc.DB, client, global)
 	n, nerr := tc.DB.CountUncleanedCloudLaunches(job.ID)
 	require.NoError(t, nerr)
-	if wantLaterClean {
-		require.NoError(t, err)
-		assert.Equal(t, 0, n)
-		assert.Empty(t, cursorCloudLaunchNote(t, tc.DB, job.ID))
-		return
-	}
 	require.ErrorContains(t, err, "not listed yet")
 	assert.Equal(t, 1, n)
 	assert.Equal(t, storage.CloudLaunchPendingNote, cursorCloudLaunchNote(t, tc.DB, job.ID))
+	if !wantLaterClean {
+		return
+	}
+	require.NoError(t, recoverLaunchSweep(tc.DB, client, global))
+	n, err = tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Empty(t, cursorCloudLaunchNote(t, tc.DB, job.ID))
 }
 
 // TestSavedIDMissDoesNotCleanWithoutPersistedNote is a saved id whose list
@@ -211,6 +215,91 @@ func TestKnownIDFirstTickDoesNotCleanWhileMarkerPresent(t *testing.T) {
 	_, err = fake.GetAgent(t.Context(), other.ID)
 	require.Error(t, err)
 	assert.Equal(t, storage.CloudLaunchPendingNote, cursorCloudLaunchNote(t, tc.DB, job.ID))
+}
+
+// TestReviewVerifierFirstEmptyAfterFoundDoesNotClean is the hidden-duplicate
+// pin. It was not on any remote branch. Sweep 1 lists and deletes the visible
+// VM. Sweep 2 lists nothing while a second VM with the same marker is still
+// live and hidden from that list. The launch stays uncleaned: one empty list
+// after a found one is not a confirmed delete and is not the later empty
+// confirmation. This is the c10h delayed-duplicate hole.
+func TestReviewVerifierFirstEmptyAfterFoundDoesNotClean(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	const token = "launch-token-hidden-dup"
+	machineID, err := tc.DB.GetMachineID()
+	require.NoError(t, err)
+	marker := agent.CursorCloudLaunchMarker(machineID.String(), token) //nolint:forbidigo // launch marker is prompt text
+	visible := cursorCloudSeedAgent(t, fake, sha, marker)
+	dup := cursorCloudSeedAgent(t, fake, sha, marker)
+	require.NoError(t, tc.DB.BeginCloudLaunch(job.ID, testWorkerID, token, cursorCloudRestartRepo))
+	require.NoError(t, tc.DB.AttachCloudAgent(job.ID, token, "bc_saved_gone"))
+	cursorCloudAgeLaunchPastLag(t, tc.DB, job.ID)
+	client := &firstListThenHide{Client: fake, hideID: dup.ID, savedID: "bc_saved_gone"}
+
+	require.NoError(t, recoverLaunchSweep(tc.DB, client, nil))
+	_, err = fake.GetAgent(t.Context(), visible.ID)
+	require.Error(t, err)
+	got, err := fake.GetAgent(t.Context(), dup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, dup.ID, got.ID)
+	n, err := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	err = recoverLaunchSweep(tc.DB, client, nil)
+	n, nerr := tc.DB.CountUncleanedCloudLaunches(job.ID)
+	require.NoError(t, nerr)
+	require.Error(t, err)
+	assert.Equal(t, 1, n)
+	assert.GreaterOrEqual(t, client.lists, 2)
+	got, err = fake.GetAgent(t.Context(), dup.ID)
+	require.NoError(t, err)
+	assert.Equal(t, dup.ID, got.ID)
+	assert.Equal(t, storage.CloudLaunchPendingNote, cursorCloudLaunchNote(t, tc.DB, job.ID))
+}
+
+// firstListThenHide shows every agent except hideID on the first list and an
+// empty list after that. hideID stays in the fake. savedID answers 404 so the
+// id delete succeeds without removing the hidden duplicate.
+type firstListThenHide struct {
+	cursorcloud.Client
+	hideID  string
+	savedID string
+	lists   int
+}
+
+func (h *firstListThenHide) ListAgents(ctx context.Context) ([]cursorcloud.Agent, error) {
+	h.lists++
+	if h.lists > 1 {
+		return nil, nil
+	}
+	agents, err := h.Client.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]cursorcloud.Agent, 0, len(agents))
+	for _, ag := range agents {
+		if ag.ID != h.hideID {
+			visible = append(visible, ag)
+		}
+	}
+	return visible, nil
+}
+
+func (h *firstListThenHide) StopAgent(ctx context.Context, id string) error {
+	if id == h.savedID {
+		return &cursorcloud.APIError{Op: "stop agent", StatusCode: http.StatusNotFound, Message: "not found"}
+	}
+	return h.Client.StopAgent(ctx, id)
+}
+
+func (h *firstListThenHide) DeleteAgent(ctx context.Context, id string) error {
+	if id == h.savedID {
+		return &cursorcloud.APIError{Op: "delete agent", StatusCode: http.StatusNotFound, Message: "not found"}
+	}
+	return h.Client.DeleteAgent(ctx, id)
 }
 
 // TestSamePassListsEmptyTwiceDoesNotClean is one restart that lists empty
