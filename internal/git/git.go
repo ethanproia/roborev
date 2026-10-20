@@ -672,6 +672,71 @@ func ValidateRepoLocalPathNoSymlinks(repoPath, path string) error {
 	return nil
 }
 
+// ConfineSnapshotPaths reports whether a snapshot directory and its target
+// file both stay inside repoPath. The repo root is compared before any
+// symlink is resolved, so a path such as /proc/self that would resolve back
+// inside the repository is still rejected. EvalSymlinks containment then
+// applies to both the directory and the target. The directory may be the
+// repo root itself; a snapshot file must be strictly inside it.
+func ConfineSnapshotPaths(repoPath, dir, target string) error {
+	absRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		return err
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	if err := snapshotPathInsideRepo(absRepo, absDir, true); err != nil {
+		return err
+	}
+	if err := snapshotPathInsideRepo(absRepo, absTarget, false); err != nil {
+		return err
+	}
+	if err := confineExistingSnapshotPath(absRepo, absDir); err != nil {
+		return err
+	}
+	if filepath.Clean(absDir) == filepath.Clean(absTarget) {
+		return nil
+	}
+	return confineExistingSnapshotPath(absRepo, absTarget)
+}
+
+// snapshotPathInsideRepo compares path with the repo root before resolving
+// symlinks. allowRoot permits the repository directory itself.
+func snapshotPathInsideRepo(absRepo, absPath string, allowRoot bool) error {
+	rel, err := filepath.Rel(absRepo, absPath)
+	if err != nil {
+		return err
+	}
+	rel = filepath.Clean(rel)
+	if rel == "." && allowRoot {
+		return nil
+	}
+	if rel == "." || !filepath.IsLocal(rel) {
+		return fmt.Errorf("path must be under the repo root: %s", absPath)
+	}
+	return nil
+}
+
+// confineExistingSnapshotPath applies symlink rejection and EvalSymlinks
+// containment to path. A missing tail is not an escape; existing components
+// must stay inside the resolved repo root.
+func confineExistingSnapshotPath(absRepo, absPath string) error {
+	rel, err := filepath.Rel(absRepo, absPath)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(rel) == "." {
+		return nil
+	}
+	return ValidateRepoLocalPathNoSymlinks(absRepo, absPath)
+}
+
 func infoExcludePath(repoPath string) (string, error) {
 	cmd := newGitCmd("-C", repoPath, "rev-parse", "--git-path", "info/exclude")
 	out, err := gitOutput(cmd)

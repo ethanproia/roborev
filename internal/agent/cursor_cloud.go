@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/kit/fslink"
+
 	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
 	"go.kenn.io/roborev/internal/git"
@@ -255,7 +257,7 @@ func (a *CursorCloudAgent) review(ctx context.Context, repoPath, commitSHA, prom
 	}
 	// Read a local snapshot before reserving a launch. An unreadable path
 	// creates nothing, so it must not take the hourly slot either.
-	launchPrompt, err := cursorCloudLaunchPrompt(ctx, prompt)
+	launchPrompt, err := cursorCloudLaunchPrompt(ctx, repoPath, prompt)
 	if err != nil {
 		if errors.Is(err, errPriorRangeReviewRefused) {
 			return "", err
@@ -972,7 +974,7 @@ func priorRangeReviewAllowlistFrom(ctx context.Context) PriorRangeReviewAllowlis
 // cursorCloudLaunchPrompt is the text CreateAgent receives. A local snapshot
 // handoff is read and inlined. A path that cannot be read is refused before
 // any launch, so the remote agent never sees a local filesystem path.
-func cursorCloudLaunchPrompt(ctx context.Context, prompt string) (string, error) {
+func cursorCloudLaunchPrompt(ctx context.Context, repoPath, prompt string) (string, error) {
 	const prefix = "Read the complete task prompt from "
 	const suffix = " and carry out its instructions. Read the file in full before starting.\n"
 	if strings.HasPrefix(prompt, prefix) && strings.HasSuffix(prompt, suffix) {
@@ -981,7 +983,10 @@ func cursorCloudLaunchPrompt(ctx context.Context, prompt string) (string, error)
 		if err != nil || strings.TrimSpace(path) == "" {
 			return "", errors.New("cursor-cloud: refusing to launch because the prompt points at a local file")
 		}
-		body, err := os.ReadFile(path)
+		if err := git.ConfineSnapshotPaths(repoPath, filepath.Dir(path), path); err != nil {
+			return "", fmt.Errorf("cursor-cloud: refusing to launch because the oversized prompt cannot be read: %w", err)
+		}
+		body, err := fslink.ReadFile(path)
 		if err != nil {
 			return "", fmt.Errorf("cursor-cloud: refusing to launch because the oversized prompt cannot be read: %w", err)
 		}
@@ -990,7 +995,7 @@ func cursorCloudLaunchPrompt(ctx context.Context, prompt string) (string, error)
 		}
 		prompt = string(body)
 	}
-	return cursorCloudInlinePriorRangeReviews(prompt, priorRangeReviewAllowlistFrom(ctx))
+	return cursorCloudInlinePriorRangeReviews(repoPath, prompt, priorRangeReviewAllowlistFrom(ctx))
 }
 
 // cursorCloudInlinePriorRangeReviews replaces builder-inserted prior-range
@@ -998,7 +1003,7 @@ func cursorCloudLaunchPrompt(ctx context.Context, prompt string) (string, error)
 // An unreadable allowlisted file drops that reference. A path outside the
 // prior-reviews directory, including through a symlink, refuses the launch.
 // Text that is not in the allowlist, including an unclosed tag, stays as it is.
-func cursorCloudInlinePriorRangeReviews(prompt string, list PriorRangeReviewAllowlist) (string, error) {
+func cursorCloudInlinePriorRangeReviews(repoPath, prompt string, list PriorRangeReviewAllowlist) (string, error) {
 	if len(list.Refs) == 0 {
 		return prompt, nil
 	}
@@ -1006,7 +1011,7 @@ func cursorCloudInlinePriorRangeReviews(prompt string, list PriorRangeReviewAllo
 		if block == "" {
 			return "", errPriorRangeReviewRefused
 		}
-		resolved, err := confinePriorRangeReviewPath(list.Dir, path)
+		resolved, err := confinePriorRangeReviewPath(repoPath, list.Dir, path)
 		if err != nil {
 			return "", err
 		}
@@ -1015,7 +1020,7 @@ func cursorCloudInlinePriorRangeReviews(prompt string, list PriorRangeReviewAllo
 	return prompt, nil
 }
 
-func confinePriorRangeReviewPath(dir, path string) (string, error) {
+func confinePriorRangeReviewPath(repoPath, dir, path string) (string, error) {
 	if strings.TrimSpace(dir) == "" || strings.TrimSpace(path) == "" || !filepath.IsAbs(dir) || !filepath.IsAbs(path) {
 		return "", errPriorRangeReviewRefused
 	}
@@ -1033,6 +1038,9 @@ func confinePriorRangeReviewPath(dir, path string) (string, error) {
 	}
 	rel, err := filepath.Rel(resolvedDir, resolvedPath)
 	if err != nil || pathEscapesDir(rel) {
+		return "", errPriorRangeReviewRefused
+	}
+	if err := git.ConfineSnapshotPaths(repoPath, dir, path); err != nil {
 		return "", errPriorRangeReviewRefused
 	}
 	return resolvedPath, nil

@@ -1144,7 +1144,7 @@ func TestCursorCloudSendsFullPromptInsteadOfLocalPath(t *testing.T) {
 	handoff := fmt.Sprintf("Read the complete task prompt from %q and carry out its instructions. Read the file in full before starting.\n", path)
 	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
 	_, err := (&CursorCloudAgent{Client: fake, RepoURL: "https://github.com/acme/api.git"}).Review(
-		context.Background(), t.TempDir(), sha, handoff, nil,
+		context.Background(), dir, sha, handoff, nil,
 	)
 	require.NoError(t, err)
 	var sent string
@@ -1243,9 +1243,13 @@ func TestCursorCloudUnclosedPriorRangeTagLeavesPromptIntact(t *testing.T) {
 func runCursorCloudPrompt(t *testing.T, ctx context.Context, promptText string) (string, int, error) {
 	t.Helper()
 	const sha = "0123456789abcdef0123456789abcdef01234567"
+	repo := t.TempDir()
+	if list := priorRangeReviewAllowlistFrom(ctx); strings.TrimSpace(list.Dir) != "" {
+		repo = list.Dir
+	}
 	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
 	_, err := (&CursorCloudAgent{Client: fake, RepoURL: "https://github.com/acme/api.git"}).Review(
-		ctx, t.TempDir(), sha, promptText, nil,
+		ctx, repo, sha, promptText, nil,
 	)
 	var sent string
 	for _, call := range fake.Calls() {

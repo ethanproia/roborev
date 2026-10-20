@@ -366,7 +366,11 @@ func (b *Builder) resolveSnapshotTarget(target SnapshotTarget) (string, string, 
 	if rel == "." || !filepath.IsLocal(rel) {
 		return "", "", fmt.Errorf("snapshot_dir must be under the config repo root: %s", configuredRoot)
 	}
-	return repoPath, filepath.Join(repoPath, rel), nil
+	snapshotRoot := filepath.Join(repoPath, rel)
+	if err := git.ConfineSnapshotPaths(repoPath, snapshotRoot, snapshotRoot); err != nil {
+		return "", "", fmt.Errorf("validate snapshot dir: %w", err)
+	}
+	return repoPath, snapshotRoot, nil
 }
 
 func writeExternalDiffSnapshot(repoPath, snapshotRoot, diff string) (string, func(), error) {
@@ -416,6 +420,13 @@ func writeExternalSnapshot(repoPath, snapshotRoot, filename, content string) (st
 		}
 		return "", nil, fmt.Errorf("close snapshot: %w", closeErr)
 	}
+	if err := git.ConfineSnapshotPaths(repoPath, dir, snapshotFile); err != nil {
+		unregister()
+		if git.ConfineSnapshotPaths(repoPath, dir, dir) == nil {
+			os.RemoveAll(dir)
+		}
+		return "", nil, fmt.Errorf("validate snapshot dir: %w", err)
+	}
 	return snapshotFile, func() {
 		os.RemoveAll(dir)
 		unregister()
@@ -445,7 +456,7 @@ func snapshotIsActive(dir string) bool {
 }
 
 func validateSnapshotRoot(repoPath, snapshotRoot string) error {
-	if err := git.ValidateRepoLocalPathNoSymlinks(repoPath, snapshotRoot); err != nil {
+	if err := git.ConfineSnapshotPaths(repoPath, snapshotRoot, snapshotRoot); err != nil {
 		return fmt.Errorf("validate snapshot dir: %w", err)
 	}
 	if err := git.EnsureNoTrackedFilesUnder(repoPath, snapshotRoot); err != nil {

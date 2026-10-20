@@ -938,10 +938,13 @@ snapshot_dir = ".cache/roborev"
 ```
 
 `snapshot_dir` must be a relative path under the repo root, must not be inside
-`.git`, and must not contain control characters. `roborev init` ensures the
-configured directory is ignored in `.gitignore`; snapshot creation also writes a
-local `.git/info/exclude` fallback for existing checkouts whose ignore setup is
-stale.
+`.git`, and must not contain control characters. roborev refuses a symlinked
+`.roborev` directory or a symlinked `snapshot_dir`. That includes a link to
+`/proc/self` and a path that leaves the repository with `..`. Reading a
+snapshot uses the same check, so a link cannot redirect the read outside the
+repository. `roborev init` ensures the configured directory is ignored in
+`.gitignore`; snapshot creation also writes a local `.git/info/exclude`
+fallback for existing checkouts whose ignore setup is stale.
 
 ### Post-Commit Review Mode
 
