@@ -1295,6 +1295,10 @@ func (wp *WorkerPool) processJob(workerID string, job *storage.ReviewJob) {
 		defer priorResult.Cleanup()
 	}
 	reviewPrompt = priorResult.Prompt
+	ctx = agent.WithPriorRangeReviewAllowlist(ctx, agent.PriorRangeReviewAllowlist{
+		Dir:  priorResult.PriorRangeReviewDir,
+		Refs: priorResult.PriorRangeReviewRefs,
+	})
 
 	var fixPlan string
 	defer func() {
