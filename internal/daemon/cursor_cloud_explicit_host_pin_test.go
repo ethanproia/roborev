@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"go.kenn.io/roborev/internal/agent"
 	"go.kenn.io/roborev/internal/config"
 	"go.kenn.io/roborev/internal/cursorcloud"
+	"go.kenn.io/roborev/internal/cursorcloud/cursorcloudtest"
 	"go.kenn.io/roborev/internal/storage"
 	"go.kenn.io/roborev/internal/testutil"
 )
@@ -79,6 +81,44 @@ func TestExplicitHostFlagPostSendDoesNotFailOver(t *testing.T) {
 	assert.Equal(t, storage.JobStatusFailed, updated.Status)
 	assert.Equal(t, agent.CursorCloudHost, updated.Agent)
 	assert.Equal(t, 0, updated.RetryCount)
+	claimed, claimErr := server.db.ClaimJob(testWorkerID)
+	require.NoError(t, claimErr)
+	assert.Nil(t, claimed)
+}
+
+func TestExplicitHostFlagCreate500AfterSendDoesNotFailOver(t *testing.T) {
+	server, job := enqueueExplicitHostFlag(t)
+	fake := &cursorcloudtest.Fake{MethodErrors: map[string]error{
+		cursorcloudtest.MethodCreate: &cursorcloud.APIError{
+			Op: "create agent", StatusCode: http.StatusInternalServerError, Message: "unavailable",
+		},
+		cursorcloudtest.MethodList: &cursorcloud.APIError{
+			Op: "list agents", StatusCode: http.StatusTooManyRequests, Message: "slow",
+		},
+	}}
+	prev, err := agent.Get(agent.CursorCloudHost)
+	require.NoError(t, err)
+	agent.Register(&agent.CursorCloudAgent{
+		Client:  fake,
+		RepoURL: "https://github.com/acme/api.git",
+	})
+	t.Cleanup(func() { agent.Register(prev) })
+
+	server.workerPool.processJob(testWorkerID, job)
+
+	creates := 0
+	for _, call := range fake.Calls() {
+		if call.Method == cursorcloudtest.MethodCreate {
+			creates++
+		}
+	}
+	require.Equal(t, 1, creates)
+	updated, err := server.db.GetJobByID(job.ID)
+	require.NoError(t, err)
+	assert.Equal(t, storage.JobStatusFailed, updated.Status)
+	assert.Equal(t, agent.CursorCloudHost, updated.Agent)
+	assert.Equal(t, 0, updated.RetryCount)
+	assert.NotContains(t, updated.Error, "failing over")
 	claimed, claimErr := server.db.ClaimJob(testWorkerID)
 	require.NoError(t, claimErr)
 	assert.Nil(t, claimed)
