@@ -19,6 +19,7 @@ import (
 
 	"go.kenn.io/roborev/internal/agent"
 	"go.kenn.io/roborev/internal/cursorcloud"
+	"go.kenn.io/roborev/internal/cursorcloud/cursorcloudtest"
 	"go.kenn.io/roborev/internal/storage"
 	"go.kenn.io/roborev/internal/testutil"
 )
@@ -231,6 +232,29 @@ func TestProcessJobCursorCloudDeadlineCheckStandsAlone(t *testing.T) {
 	require.NoError(t, claimErr)
 	require.NotNil(t, claimed)
 	assert.Equal(t, "test", claimed.Agent)
+}
+
+// TestCursorCloudBadRefFailoversWithoutRetry is a ref that is not one commit.
+// Client setup and the repo URL already succeeded, so this is the commit
+// check. It fails over once and does not retry cursor-cloud.
+func TestCursorCloudBadRefFailoversWithoutRetry(t *testing.T) {
+	cloud := &agent.CursorCloudAgent{
+		Client:  &cursorcloudtest.Fake{},
+		RepoURL: "https://example.com/acme/repo.git",
+	}
+	_, err := cloud.Review(context.Background(), t.TempDir(), "dirty", "prompt", nil)
+	require.Error(t, err)
+	require.True(t, agent.IsUnavailable(err))
+
+	tc := newWorkerTestContext(t, 1)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	job.BackupAgent = "test"
+	tc.Pool.failOrRetryAgentExecutionContext(context.Background(), testWorkerID, job, job.Agent, err)
+
+	updated := tc.assertJobStatus(t, job.ID, storage.JobStatusQueued)
+	assert.Equal(t, "test", updated.Agent)
+	assert.Equal(t, 0, updated.RetryCount)
 }
 
 func TestCursorCloudPreLaunchValidationCanFailOver(t *testing.T) {
