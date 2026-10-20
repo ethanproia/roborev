@@ -1451,37 +1451,7 @@ func (wp *WorkerPool) processJob(workerID string, job *storage.ReviewJob) {
 			wp.releaseIfPanelMember(job)
 			return // Job already marked as canceled in DB, nothing more to do
 		}
-		// A cursor-cloud create that may already have been sent, including a
-		// 429 and a deadline after send, and a wait-loop timeout, carries
-		// ErrCursorCloudNonRetryable. Pre-launch validation and the launch
-		// cap do not. Honor the sentinel before the deadline path below,
-		// which would otherwise drop it and requeue a second POST /agents.
-		if noVerdict, ok := errors.AsType[*review.NoVerdictError](err); ok && errors.Is(err, agent.ErrCursorCloudNonRetryable) {
-			// The create was sent, so do not POST again. The stored error
-			// stays a no-verdict result: prefix, output, panel label, and
-			// the restart skip all key off that text.
-			log.Printf("[%s] cursor-cloud launch will not be retried for job %d: %v", workerID, job.ID, err)
-			wp.failSentCursorCloud(workerID, job, agentName, review.NoVerdictMessage(noVerdict))
-			return
-		}
-		if errors.Is(err, agent.ErrCursorCloudNonRetryable) {
-			log.Printf("[%s] cursor-cloud launch will not be retried for job %d: %v", workerID, job.ID, err)
-			wp.failCursorCloudWithoutRetry(workerID, job, agentName, err)
-			return
-		}
-		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
-			timeoutErr := fmt.Sprintf(
-				"%s %s",
-				agentTimeoutErrorPrefix,
-				jobTimeoutDuration.Round(time.Second),
-			)
-			log.Printf("[%s] Job %d timed out: %v", workerID, job.ID, err)
-			wp.failOrRetryAgentContext(ctx, workerID, job, agentName, timeoutErr)
-			return
-		}
-		log.Printf("[%s] Agent error on job %d: %v",
-			workerID, job.ID, err)
-		wp.failOrRetryAgentExecutionContext(ctx, workerID, job, agentName, err)
+		wp.finishAgentError(ctx, workerID, job, agentName, err, jobTimeoutDuration)
 		return
 	}
 	if wp.handleUpdateInterruption(ctx, workerID, job) {
@@ -1705,13 +1675,43 @@ func (wp *WorkerPool) failOrRetryAgentContext(
 // failing over would only hide the missing marker.
 func (wp *WorkerPool) failGetAgentContext(ctx context.Context, workerID string, job *storage.ReviewJob, err error) {
 	errorMsg := fmt.Sprintf("get agent: %v", err)
-	if !agent.IsHostUnavailable(err) {
+	if !agent.IsHostUnavailable(err) && !agent.IsCursorCloudConfig(err) {
 		wp.failOrRetryAgentContext(ctx, workerID, job, job.Agent, errorMsg)
 		return
 	}
 	wp.runAttemptTransition(workerID, job, func() {
 		wp.failWithoutRetryLocked(workerID, job, job.Agent, errorMsg)
 	})
+}
+
+// finishAgentError routes a finished agent error. A typed cursor-cloud launch
+// failure is terminal even when it unwraps to context.DeadlineExceeded.
+// Pre-launch validation and the launch cap do not carry that sentinel, so
+// they still use the deadline path below. A sent create that produced no
+// verdict keeps the no-verdict text; the create was already posted.
+func (wp *WorkerPool) finishAgentError(ctx context.Context, workerID string, job *storage.ReviewJob, agentName string, err error, jobTimeout time.Duration) {
+	if noVerdict, ok := errors.AsType[*review.NoVerdictError](err); ok && errors.Is(err, agent.ErrCursorCloudNonRetryable) {
+		log.Printf("[%s] cursor-cloud launch will not be retried for job %d: %v", workerID, job.ID, err)
+		wp.failSentCursorCloud(workerID, job, agentName, review.NoVerdictMessage(noVerdict))
+		return
+	}
+	if errors.Is(err, agent.ErrCursorCloudNonRetryable) {
+		log.Printf("[%s] cursor-cloud launch will not be retried for job %d: %v", workerID, job.ID, err)
+		wp.failCursorCloudWithoutRetry(workerID, job, agentName, err)
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+		timeoutErr := fmt.Sprintf(
+			"%s %s",
+			agentTimeoutErrorPrefix,
+			jobTimeout.Round(time.Second),
+		)
+		log.Printf("[%s] Job %d timed out: %v", workerID, job.ID, err)
+		wp.failOrRetryAgentContext(ctx, workerID, job, agentName, timeoutErr)
+		return
+	}
+	log.Printf("[%s] Agent error on job %d: %v", workerID, job.ID, err)
+	wp.failOrRetryAgentExecutionContext(ctx, workerID, job, agentName, err)
 }
 
 // failOrRetryAgentExecutionContext preserves the typed category attached by an
