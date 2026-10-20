@@ -126,11 +126,9 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 }
 
 func cloudLaunchAgedOut(createdAt string, now time.Time) bool {
-	created, err := time.ParseInLocation("2006-01-02 15:04:05", createdAt, time.UTC)
-	if err != nil {
-		if created, err = time.Parse(time.RFC3339, createdAt); err != nil {
-			return false
-		}
+	created, ok := storage.ParseCloudLaunchCreatedAt(createdAt)
+	if !ok {
+		return false
 	}
 	return !created.Add(cloudLaunchMaxAge).After(now)
 }

@@ -301,6 +301,72 @@ func (db *DB) keepCloudLaunchAfterJobDelete() error {
 	return tx.Commit()
 }
 
+// ParseCloudLaunchCreatedAt is the clock cloudLaunchAgedOut uses.
+// SQLite's datetime() also accepts date-only, minute precision, a T with no
+// zone, and a trailing Z on a space-separated time. This parser does not.
+// time.RFC3339 accepts numeric offsets; the sqlite layout does not.
+func ParseCloudLaunchCreatedAt(s string) (time.Time, bool) {
+	if t, err := time.ParseInLocation(sqliteTimestampLayout, s, time.UTC); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// backfillCloudLaunchCreatedAt rewrites created_at so every row parses in
+// ParseCloudLaunchCreatedAt and ages from that instant. A value that already
+// parses is stored as UTC sqlite seconds of the same instant. Anything else
+// becomes datetime('now'): blank, whitespace, garbage, unix seconds, and date-only.
+func (db *DB) backfillCloudLaunchCreatedAt() error {
+	rows, err := db.Query(`SELECT id, COALESCE(created_at, '') FROM review_job_cloud_launches`)
+	if err != nil {
+		return fmt.Errorf("cloud launch created_at: %w", err)
+	}
+	defer rows.Close()
+	type createdAtFix struct {
+		id     int64
+		value  string
+		useNow bool
+	}
+	var fixes []createdAtFix
+	for rows.Next() {
+		var id int64
+		var created string
+		if err := rows.Scan(&id, &created); err != nil {
+			return fmt.Errorf("cloud launch created_at: %w", err)
+		}
+		if parsed, ok := ParseCloudLaunchCreatedAt(created); ok {
+			canonical := parsed.UTC().Format(sqliteTimestampLayout)
+			if created == canonical {
+				continue
+			}
+			fixes = append(fixes, createdAtFix{id: id, value: canonical})
+			continue
+		}
+		fixes = append(fixes, createdAtFix{id: id, useNow: true})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("cloud launch created_at: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("cloud launch created_at: %w", err)
+	}
+	for _, fix := range fixes {
+		var err error
+		if fix.useNow {
+			_, err = db.Exec(`UPDATE review_job_cloud_launches SET created_at = datetime('now') WHERE id = ?`, fix.id)
+		} else {
+			_, err = db.Exec(`UPDATE review_job_cloud_launches SET created_at = ? WHERE id = ?`, fix.value, fix.id)
+		}
+		if err != nil {
+			return fmt.Errorf("cloud launch created_at: %w", err)
+		}
+	}
+	return nil
+}
+
 // AttachLaunchOrphanWarnings fills OrphanWarning for an API job listing.
 // A launch lookup error is returned; it is not skipped.
 func (db *DB) AttachLaunchOrphanWarnings(jobs []ReviewJob) error {
