@@ -106,16 +106,19 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 		// The repository cannot select a list filter. The token is unique,
 		// so the marker sweep still deletes by id. This list is not a later
 		// pass. A saved-id or token-only miss is noted once the launch is
-		// aged out, including when the list was non-empty.
+		// aged out, including when the list was non-empty. The orphan-note
+		// write returns nil.
 		found, err := agent.DeleteCursorCloudLaunchByToken(ctx, client, daemonID, row.Token)
 		if err != nil {
-			// The sweep did not confirm a delete. Note that before returning.
 			return errors.Join(err, noteUnconfirmedCloudDelete(db, row))
 		}
 		return holdListedSweep(db, row, found, seen, noted, cleanDelay, true)
 	}
 	found, err := agent.DeleteCursorCloudLaunchByMarker(ctx, client, daemonID, row.Token, repoURL)
 	if err != nil {
+		// Fail closed. A saved agent id was already deleted above when it
+		// was set. The marker sweep is the only look at any other VM for
+		// this token, so a list or delete error leaves the row uncleaned.
 		return err
 	}
 	if cursorCloudSamePassResweep != nil {
