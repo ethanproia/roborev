@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -8,11 +9,14 @@ import (
 const CloudLaunchInterruptedError = "cursor-cloud launch interrupted by daemon restart; not relaunched"
 
 type CloudLaunch struct {
-	ID       int64
-	JobID    int64
-	Token    string
-	AgentID  string
-	RepoPath string
+	ID    int64
+	JobID int64
+	// Token is the column text when it is not NULL. TokenNull means the
+	// column itself is NULL; Token is then left unset.
+	Token     string
+	TokenNull bool
+	AgentID   string
+	RepoPath  string
 	// RepoIdentity is the repository URL sent when this launch was created.
 	// Recovery lists against it. A later change to the checkout remote is not
 	// the create target.
@@ -64,8 +68,13 @@ func (db *DB) ListUncleanedCloudLaunches() ([]CloudLaunch, error) {
 	var out []CloudLaunch
 	for rows.Next() {
 		var row CloudLaunch
-		if err := rows.Scan(&row.ID, &row.JobID, &row.Token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt); err != nil {
+		var token sql.NullString
+		if err := rows.Scan(&row.ID, &row.JobID, &token, &row.AgentID, &row.RepoPath, &row.RepoIdentity, &row.CreatedAt); err != nil {
 			return nil, err
+		}
+		row.TokenNull = !token.Valid
+		if token.Valid {
+			row.Token = token.String
 		}
 		out = append(out, row)
 	}

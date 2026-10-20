@@ -74,8 +74,9 @@ func recoverOneCloudLaunch(ctx context.Context, db *storage.DB, client cursorclo
 			return err
 		}
 	}
-	if row.Token == "" {
-		return db.MarkCloudLaunchCleaned(row.ID)
+	if row.TokenNull || row.Token == "" {
+		// No marker can find a VM for this row. Leave it uncleaned.
+		return reportCloudLaunchOrphan(db, row)
 	}
 	repoURL := row.RepoIdentity
 	if !agent.CursorCloudRepoUsable(repoURL) {
