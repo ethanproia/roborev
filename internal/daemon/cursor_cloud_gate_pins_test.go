@@ -363,3 +363,27 @@ func TestCursorCloudRestartEmptyTokenCleansOnlyConfirmedDelete(t *testing.T) {
 		assert.Equal(t, 0, cursorCloudCleanedFlag(t, tc, job.ID))
 	})
 }
+
+// TestEmptyTokenSweepFillsEmptyRowNote is the launch row that had no
+// orphan_note. The empty-token pass writes the durable sentence there.
+// Leaving the column empty fails this test.
+func TestEmptyTokenSweepFillsEmptyRowNote(t *testing.T) {
+	tc, fake := cursorCloudRestartFixture(t)
+	sha := testutil.GetHeadSHA(t, tc.TmpDir)
+	job := tc.createAndClaimJobWithAgent(t, sha, testWorkerID, agent.CursorCloudHost)
+	cursorCloudInsertBareLaunch(t, tc, job.ID, "", "")
+	var before string
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT orphan_note FROM review_job_cloud_launches WHERE job_id = ?`, job.ID,
+	).Scan(&before))
+	assert.Empty(t, before)
+
+	require.NoError(t, recoverStaleJobs(context.Background(), tc.DB, fake))
+	var after string
+	require.NoError(t, tc.DB.QueryRow(
+		`SELECT orphan_note FROM review_job_cloud_launches WHERE job_id = ?`, job.ID,
+	).Scan(&after))
+	assert.NotEmpty(t, after)
+	assert.Contains(t, after, "no launch token")
+	assert.Equal(t, 0, cursorCloudCleanedFlag(t, tc, job.ID))
+}
