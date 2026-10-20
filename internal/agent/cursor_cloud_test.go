@@ -1360,6 +1360,43 @@ func TestCursorCloudPanicReleasesLaunchSlot(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// panicOutput panics on the first write. review writes the created-agent
+// status line after CreateAgent returns and before it waits, which is after
+// the delete defer is armed and before DeleteAgent runs on the success path.
+type panicOutput struct{}
+
+func (panicOutput) Write([]byte) (int, error) {
+	panic("output exploded")
+}
+
+func TestCursorCloudOutputPanicStillDeletes(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	const repo = "https://example.com/acme/repo.git"
+	fake := &cursorcloudtest.Fake{CreateStatus: cursorcloud.StatusFinished, Final: "ok"}
+	a := &CursorCloudAgent{Client: fake, RepoURL: repo}
+	require.PanicsWithValue(t, "output exploded", func() {
+		_, _ = a.Review(context.Background(), t.TempDir(), sha, "prompt", panicOutput{})
+	})
+	var ops []string
+	var stopID, deleteID string
+	for _, call := range fake.Calls() {
+		switch call.Method {
+		case cursorcloudtest.MethodStop:
+			ops = append(ops, "stop")
+			stopID = call.ID
+		case cursorcloudtest.MethodDelete:
+			ops = append(ops, "delete")
+			deleteID = call.ID
+		case cursorcloudtest.MethodGet, cursorcloudtest.MethodFinal:
+			ops = append(ops, call.Method)
+		}
+	}
+	assert.Equal(t, []string{"stop", "delete"}, ops)
+	assert.NotEmpty(t, stopID)
+	assert.Equal(t, stopID, deleteID)
+	assert.Equal(t, 1, createCount(fake))
+}
+
 func TestCursorCloudReadErrorKeepsQuotaAndIsNotRetried(t *testing.T) {
 	const sha = "0123456789abcdef0123456789abcdef01234567"
 	const repo = "https://example.com/acme/repo.git"
