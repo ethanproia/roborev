@@ -1158,6 +1158,9 @@ func (w *SyncWorker) HealthCheck() (healthy bool, message string) {
 	if err := pool.Ping(ctx); err != nil {
 		return false, "connection lost"
 	}
+	if problem := pool.CloudLaunchIndexProblem(); problem != "" {
+		return false, problem
+	}
 
 	return true, "connected"
 }

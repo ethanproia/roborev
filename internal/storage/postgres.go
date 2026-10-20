@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"uuid"
 
@@ -64,6 +66,9 @@ type PgPool struct {
 	pool       *pgxpool.Pool
 	connString string
 	config     PgPoolConfig
+
+	mu                      sync.Mutex
+	cloudLaunchIndexProblem string
 }
 
 // PgPoolConfig configures the PostgreSQL connection pool
@@ -1754,8 +1759,44 @@ func (p *PgPool) ensureLocalCloudLaunchTable(ctx context.Context) {
 	}
 	// Blank tokens are the NULL backfill, not launch tokens. A real token
 	// names one launch row. Schema version stays at 23; this table is local.
-	if _, err := p.pool.Exec(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_review_job_cloud_launches_token
-		ON review_job_cloud_launches (launch_token) WHERE launch_token <> ''`); err != nil {
-		log.Printf("cursor-cloud: launch token index: %v", err)
+	// Index creation is fail-soft: a duplicate token must not stop postgres
+	// startup. A missing index is still an error and is reported.
+	p.ensureCloudLaunchTokenIndex(ctx)
+}
+
+func (p *PgPool) setCloudLaunchIndexProblem(msg string) {
+	p.mu.Lock()
+	p.cloudLaunchIndexProblem = msg
+	p.mu.Unlock()
+}
+
+// CloudLaunchIndexProblem is set when startup continued without the unique
+// launch-token index. An empty string means the index is present.
+func (p *PgPool) CloudLaunchIndexProblem() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cloudLaunchIndexProblem
+}
+
+func (p *PgPool) ensureCloudLaunchTokenIndex(ctx context.Context) {
+	_, createErr := p.pool.Exec(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_review_job_cloud_launches_token
+		ON review_job_cloud_launches (launch_token) WHERE launch_token <> ''`)
+	var exists bool
+	lookupErr := p.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM pg_indexes
+		WHERE schemaname = current_schema() AND indexname = 'idx_review_job_cloud_launches_token'
+	)`).Scan(&exists)
+	if lookupErr == nil && exists {
+		p.setCloudLaunchIndexProblem("")
+		return
 	}
+	detail := "cursor-cloud: postgres launch token unique index is missing; startup continued"
+	if createErr != nil {
+		detail = fmt.Sprintf("%s: %v", detail, createErr)
+	}
+	if lookupErr != nil {
+		detail = fmt.Sprintf("%s: %v", detail, lookupErr)
+	}
+	slog.Error(detail)
+	p.setCloudLaunchIndexProblem(detail)
 }
